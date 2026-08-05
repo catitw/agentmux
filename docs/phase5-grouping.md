@@ -7,12 +7,13 @@ persisted) and nothing is stored back.
 
 ## Classification rules (`src/project.rs`)
 
-- **Live cwd**: on Linux, `/proc/<shell_pid>/cwd` is read via one `readlink`
-  on the detection tick (500 ms), so `cd` in a terminal re-classifies the
-  session immediately. Other platforms have no cheap equivalent: the spawn
-  work_dir is used and the session's project stays fixed for its lifetime
-  (documented caveat). `/proc` read failures fall back to the spawn
-  work_dir.
+- **Live cwd**: on Linux, `/proc/<shell_pid>/cwd` is read via one `readlink`;
+  on macOS, `proc_pidinfo(PROC_PIDVNODEPATHINFO)` (libproc) fills the
+  vnode path — both are a single syscall on the detection tick (500 ms), so
+  `cd` in a terminal re-classifies the session immediately. Windows has no
+  sane API for another process's cwd → live cwd is `None` there and the
+  spawn work_dir is used (documented caveat). Read failures on any platform
+  fall back to the spawn work_dir.
 - **Project**: walk up from the cwd looking for `.git` — a directory OR a
   file (worktrees have a `.git` FILE). Found → the repo root is the project
   (display name = basename, full path in the header tooltip). Not found →

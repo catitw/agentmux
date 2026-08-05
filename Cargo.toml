@@ -29,3 +29,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 [[bin]]
 name = "agentmux"
 path = "src/main.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.189"

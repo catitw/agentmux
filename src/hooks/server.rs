@@ -8,7 +8,7 @@
 //! docs/phase3-hooks.md for the full discussion.
 
 use super::{HookReport, parse_report};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -134,6 +134,7 @@ fn handle(
 fn write_port_file(path: &std::path::Path, port: u16) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true).mode(0o600);

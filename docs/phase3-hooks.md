@@ -119,8 +119,12 @@ UI and is what the scripted e2e asserts on.
 - Hook configuration is global to claude (`~/.claude/settings.json`) — agents
   launched outside agentmux fire hooks too; their reports find no session and
   are dropped.
-- The claude hook asset is POSIX sh + curl (Windows needs a future .ps1
-  variant; the omp extension already handles win32 paths).
+- **Windows hook gap**: the claude hook asset is POSIX sh + curl; on
+  Windows `--install-hooks` still writes it (harmless) but it will not
+  execute, so claude hook reports are unavailable there until a .ps1
+  variant is added. The omp extension already handles win32 paths
+  (`%APPDATA%\agentmux\agentmux.port`), so omp sessions get hook reports on
+  Windows. Everything else in agentmux is platform-neutral.
 - `clear`/release does not scrub `detection` immediately — the screen engine
   re-derives it (usually `None` once the agent process is gone).
 - A backgrounded agent whose hook reports keep arriving still holds

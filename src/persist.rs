@@ -15,6 +15,10 @@ pub struct SessionMeta {
     pub work_dir: String,
     pub command: String,
     pub label: String,
+    /// User-assigned name; absent in v1 files written before the rename
+    /// feature (schema version stays 1 — the field is optional).
+    #[serde(default)]
+    pub custom_name: Option<String>,
 }
 
 /// On-disk file layout.
@@ -95,11 +99,13 @@ mod tests {
                 work_dir: "/home/user/proj-a".into(),
                 command: "omp".into(),
                 label: "omp".into(),
+                custom_name: Some("my agent".into()),
             },
             SessionMeta {
                 work_dir: "/home/user".into(),
                 command: "/bin/bash".into(),
                 label: "Shell".into(),
+                custom_name: None,
             },
         ]
     }
@@ -152,5 +158,46 @@ mod tests {
         // No leftover tmp file.
         assert!(!path.with_extension("json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn v1_file_without_custom_name_loads() {
+        // Files written before the rename feature have no custom_name field;
+        // schema version stays 1 and the field is optional.
+        let path = std::env::temp_dir().join(format!(
+            "agentmux-v1-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"version": 1, "sessions": [{"work_dir": "/home/user", "command": "bash", "label": "Shell"}]}"#,
+        )
+        .unwrap();
+        let metas = load(&path).expect("v1 file loads");
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].custom_name, None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn custom_name_roundtrips() {
+        let path = std::env::temp_dir().join(format!(
+            "agentmux-name-{}.json",
+            std::process::id()
+        ));
+        let metas = vec![SessionMeta {
+            work_dir: "/home/user".into(),
+            command: "bash".into(),
+            label: "Shell".into(),
+            custom_name: Some("agentmux dev".into()),
+        }];
+        save(&path, &metas).unwrap();
+        assert_eq!(load(&path).unwrap(), metas);
+        let _ = std::fs::remove_file(&path);
     }
 }

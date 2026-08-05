@@ -20,16 +20,22 @@ pub fn tab_bar(
     ui.horizontal(|ui| {
         for (id, entry) in sessions {
             let is_selected = selected == Some(*id);
-            // Tab label: agent marker (state-colored dot + agent name) when
-            // an agent is detected, else the terminal title / tool name.
-            // A ⚡ marks hook-authoritative state.
-            let label: egui::WidgetText = match &entry.detection {
-                Some(detection) => tab_label_with_marker(detection, entry.hook.is_some()),
-                None => entry
-                    .terminal_title
-                    .as_deref()
-                    .unwrap_or(&entry.session.tool_name)
-                    .into(),
+            // Tab label precedence: custom name > detected agent (with a
+            // state-colored marker; ⚡ = hook-authoritative) > terminal
+            // title > tool name.
+            let label: egui::WidgetText = if let Some(name) = &entry.session.custom_name {
+                name.clone().into()
+            } else {
+                match &entry.detection {
+                    Some(detection) => {
+                        tab_label_with_marker(detection, entry.hook.is_some())
+                    }
+                    None => entry
+                        .terminal_title
+                        .as_deref()
+                        .unwrap_or(&entry.session.tool_name)
+                        .into(),
+                }
             };
             let (tab, close) = tab(ui, *id, &label, is_selected);
             if tab.clicked() {

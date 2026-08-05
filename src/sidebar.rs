@@ -15,6 +15,7 @@ pub fn show(
     sessions: &BTreeMap<u64, SessionEntry>,
     selected: Option<u64>,
     collapsed: &mut HashSet<PathBuf>,
+    renaming: &mut Option<(u64, String)>,
 ) -> Option<Action> {
     let mut action = None;
 
@@ -50,7 +51,9 @@ pub fn show(
                     if group.branches.is_empty() {
                         // Non-git project: sessions directly under it.
                         for id in &group.sessions {
-                            session_row_with_select(ui, sessions, *id, selected, &mut action);
+                            session_row_with_select(
+                                ui, sessions, *id, selected, &mut action, renaming,
+                            );
                         }
                     } else {
                         for branch in &group.branches {
@@ -64,7 +67,7 @@ pub fn show(
                                 |ui| {
                                     for id in &branch.sessions {
                                         session_row_with_select(
-                                            ui, sessions, *id, selected, &mut action,
+                                            ui, sessions, *id, selected, &mut action, renaming,
                                         );
                                     }
                                 },
@@ -114,11 +117,49 @@ fn session_row_with_select(
     id: u64,
     selected: Option<u64>,
     action: &mut Option<Action>,
+    renaming: &mut Option<(u64, String)>,
 ) {
     let Some(entry) = sessions.get(&id) else {
         return;
     };
-    let row = session_row(ui, entry, selected == Some(id));
+    let is_renaming = renaming.as_ref().is_some_and(|(rid, _)| *rid == id);
+    let row = session_row(ui, entry, selected == Some(id), is_renaming);
+
+    // Right-click context menu: rename entry point (session rows only).
+    row.context_menu(|ui| {
+        if ui.button("Rename session").clicked() {
+            *action = Some(Action::StartRename(id));
+            ui.close();
+        }
+    });
+
+    if is_renaming
+        && let Some((_, text)) = renaming.as_mut()
+    {
+        // Inline rename edit overlaying the painted label.
+        let edit_id = ui.id().with(("rename", id));
+        let edit_rect = egui::Rect::from_min_size(
+            egui::pos2(row.rect.left() + 22.0, row.rect.top() + 3.0),
+            egui::vec2(row.rect.width() - 30.0, ROW_HEIGHT - 6.0),
+        );
+        let response = ui.put(
+            edit_rect,
+            egui::TextEdit::singleline(text)
+                .id(edit_id)
+                .desired_width(edit_rect.width() - 8.0),
+        );
+        if !ui.memory(|m| m.has_focus(edit_id)) {
+            ui.memory_mut(|m| m.request_focus(edit_id));
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            *action = Some(Action::CommitRename(id, Some(text.clone())));
+        } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            *action = Some(Action::CancelRename);
+        }
+        let _ = response;
+        return; // the painted row body is skipped while renaming
+    }
+
     if row.clicked() {
         *action = Some(Action::Select(id));
     }
@@ -130,7 +171,12 @@ fn session_row_with_select(
 /// With an agent detected the row shows the agent's display name and a
 /// state-colored dot (orange = blocked, blue = working, gray = idle);
 /// otherwise the process-status dot and tool name as before.
-fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> egui::Response {
+fn session_row(
+    ui: &mut egui::Ui,
+    entry: &SessionEntry,
+    is_selected: bool,
+    is_renaming: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::click(),
@@ -164,28 +210,26 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
 
     let session = &entry.session;
 
-    // Agent layer takes visual precedence when present; a ⚡ marks
-    // hook-authoritative state (herdr Channel C).
-    let (dot_color, primary_label) = match &entry.detection {
-        Some(detection) if entry.hook.is_some() => (
-            detection.state.color(),
-            format!("{} ⚡", detection.agent.display_name()),
-        ),
-        Some(detection) => (detection.state.color(), detection.agent.display_name().to_owned()),
-        None => (session.status.color(), session.tool_name.clone()),
+    // Status dot stays semantic; the label follows the precedence
+    // custom name > detected agent > tool name.
+    let dot_color = match &entry.detection {
+        Some(detection) => detection.state.color(),
+        None => session.status.color(),
     };
 
     let dot_center = egui::pos2(rect.left() + 12.0, rect.center().y);
     ui.painter().circle_filled(dot_center, 4.5, dot_color);
 
-    let text_color = visuals.text_color();
-    ui.painter().text(
-        egui::pos2(rect.left() + 24.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        primary_label,
-        egui::FontId::proportional(14.0),
-        text_color,
-    );
+    if !is_renaming {
+        let text_color = visuals.text_color();
+        ui.painter().text(
+            egui::pos2(rect.left() + 24.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            entry.sidebar_label(),
+            egui::FontId::proportional(14.0),
+            text_color,
+        );
+    }
 
     let basename = session
         .work_dir

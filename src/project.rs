@@ -125,10 +125,11 @@ pub fn read_head_branch(root: &Path) -> Option<String> {
 }
 
 /// Live working directory of a session's shell process. On Linux the PTY
-/// child's cwd is read via `/proc/<pid>/cwd` (one readlink), so `cd` in the
-/// terminal re-classifies the session. Other platforms have no cheap
-/// equivalent — the caller falls back to the spawn work_dir (caveat
-/// documented in docs/phase5-grouping.md).
+/// child's cwd is read via `/proc/<pid>/cwd` (one readlink); on macOS via
+/// libproc's `proc_pidinfo(PROC_PIDVNODEPATHINFO)` — both are a single
+/// syscall, so `cd` in the terminal re-classifies the session. Windows has
+/// no sane API for another process's cwd → `None`, and the caller falls
+/// back to the spawn work_dir (caveat documented in docs/phase5-grouping.md).
 #[cfg(target_os = "linux")]
 pub fn live_cwd(shell_pid: u32) -> Option<PathBuf> {
     if shell_pid == 0 {
@@ -137,7 +138,37 @@ pub fn live_cwd(shell_pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{shell_pid}/cwd")).ok()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub fn live_cwd(shell_pid: u32) -> Option<PathBuf> {
+    if shell_pid == 0 {
+        return None;
+    }
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::uninit();
+    // SAFETY: proc_pidinfo fills the vnode-path buffer (fixed MAXPATHLEN);
+    // the buffer is a valid writable region of the right size.
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            shell_pid as libc::pid_t,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr() as *mut libc::c_void,
+            std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int,
+        )
+    };
+    if ret <= 0 {
+        return None;
+    }
+    // SAFETY: ret > 0 means proc_pidinfo wrote the struct.
+    let info = unsafe { info.assume_init() };
+    // SAFETY: vip_path is a NUL-terminated C string at the start of the
+    // pvi_cdir field (the array's first element address).
+    let path = unsafe {
+        std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr() as *const libc::c_char)
+    };
+    Some(PathBuf::from(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn live_cwd(_shell_pid: u32) -> Option<PathBuf> {
     None
 }

@@ -5,7 +5,6 @@ mod app;
 mod detect;
 mod fonts;
 mod hooks;
-mod new_session;
 mod notify;
 mod persist;
 mod project;

@@ -1,39 +1,44 @@
-# Phase 4 — session persistence & new-session dialog
+# Phase 4 — session persistence & session management
 
-Two coupled features: a new-session dialog (both "+" buttons no longer spawn
-blindly) and metadata persistence so the session list survives restarts.
+Session metadata persistence so the session list survives restarts, plus
+the new-session and rename flows that feed it.
 
-## New-session dialog (`src/new_session.rs`)
+## New session (direct spawn)
 
-Both "+" buttons (sidebar header and tab bar) now emit `Action::NewSession`,
-which opens a plain `egui::Window` instead of spawning:
+All "+" entry points (sidebar header, tab bar, empty-state button) spawn a
+shell session immediately — there is no dialog:
 
-- **Work directory** — text input, default `$HOME`.
-- **Command** — text input, default = `default_shell_command()` (the
-  `$SHELL`-based shell). Split into program + args on whitespace
-  (`split_command`); the first token is the program alacritty spawns.
-- **Label** — optional; empty derives from the command basename
-  (`derive_label`: shell programs → "Shell" as today; anything else keeps
-  its basename, e.g. "omp" → "omp").
-- **Validation** (`validate`, pure): work dir must exist and be a directory
-  (inline red error text; dialog stays open), command must be non-empty.
-  Enter = Create, Esc = Cancel.
-- On Create: spawn the session with the draft values, persist, close.
+- **Work directory**: the currently SELECTED session's live cwd
+  (`project::live_cwd(shell_pid)`, fallback = that session's spawn
+  work_dir), so a new tab opens where you are working; with no selection,
+  `default_work_dir()` (`$HOME`).
+- **Command**: `default_shell_command()` (`$SHELL` → `/etc/passwd` login
+  shell → `bash`).
+- **Label**: `session::derive_label(command)` — shells map to "Shell",
+  anything else keeps its basename (e.g. "omp").
+- Persisted like any spawned session.
 
-Deliberately minimal: no dir-picker crate, no clap, three text fields.
+## Rename
+
+Right-click a session row → **Rename session** → inline single-line edit:
+Enter commits, Esc cancels, empty/whitespace commit CLEARS the custom name.
+`Session.custom_name` takes display precedence everywhere (sidebar row, tab
+label): custom name > detected agent > terminal title / tool name.
 
 ## Persistence (`src/persist.rs`)
 
 - File: `config_dir()/agentmux/sessions.json` — same `dirs::config_dir()`
   base as the hook port file (honors `XDG_CONFIG_HOME` on Linux /
   `%APPDATA%` on Windows).
-- Schema (`version: 1`):
+- Schema (`version: 1` — `custom_name` is optional, so files written before
+  the rename feature load unchanged):
 
   ```json
-  { "version": 1, "sessions": [ { "work_dir": "...", "command": "...", "label": "..." } ] }
+  { "version": 1, "sessions": [ { "work_dir": "...", "command": "...", "label": "...", "custom_name": "..." } ] }
   ```
 
   Array order = sidebar order. Only metadata persists — no PIDs, no status.
+  Restore applies `custom_name` when present.
 - **Save**: after every spawn and every close (both are rare; no debounce).
   Atomic: write `sessions.json.tmp` then rename. Includes all live sessions
   (even ones whose agent is running) EXCEPT transient ones: sessions spawned

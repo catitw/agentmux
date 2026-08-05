@@ -3,7 +3,6 @@
 use crate::detect::engine::Detector;
 use crate::detect::{AgentState, Detection};
 use crate::hooks::{HookAuthority, HookState, ReportServer};
-use crate::new_session::{self, NewSessionDraft};
 use crate::notify::ToastQueue;
 use crate::persist::{self, SessionMeta};
 use crate::project::{ProjectClassifier, ProjectInfo};
@@ -62,14 +61,21 @@ pub struct SessionEntry {
 
 /// UI actions produced by the sidebar / tab bar, applied by the app after
 /// the panel closures have released their borrows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Select a session's tab.
     Select(u64),
     /// Close a session's tab.
     Close(u64),
-    /// Spawn a new default shell session.
+    /// Spawn a new default shell session (follows the selected session's
+    /// cwd).
     NewSession,
+    /// Begin inline rename for a session (context menu).
+    StartRename(u64),
+    /// Commit the inline rename; `None` or empty clears the custom name.
+    CommitRename(u64, Option<String>),
+    /// Abort the inline rename.
+    CancelRename,
 }
 
 pub struct AgentMuxApp {
@@ -101,8 +107,8 @@ pub struct AgentMuxApp {
     classifier: ProjectClassifier,
     /// Sidebar projects collapsed by the user (project root paths).
     collapsed_projects: std::collections::HashSet<PathBuf>,
-    /// Open new-session dialog draft (None = dialog closed).
-    new_session: Option<NewSessionDraft>,
+    /// Inline rename state: session id + current draft text.
+    renaming: Option<(u64, String)>,
 }
 
 impl AgentMuxApp {
@@ -157,7 +163,7 @@ impl AgentMuxApp {
             terminal_theme,
             classifier: ProjectClassifier::new(),
             collapsed_projects: std::collections::HashSet::new(),
-            new_session: None,
+            renaming: None,
         };
         // Session startup: AGENTMUX_SEED_COMMAND (verification hook) takes
         // precedence; otherwise restore persisted sessions; otherwise seed
@@ -222,6 +228,11 @@ impl AgentMuxApp {
                             Vec::new(),
                             false,
                         );
+                        // Apply the persisted custom name after spawn (the
+                        // new session has the highest id).
+                        if let Some(entry) = app.sessions.values_mut().next_back() {
+                            entry.session.custom_name = meta.custom_name.clone();
+                        }
                         restored += 1;
                     }
                     eprintln!(
@@ -293,6 +304,7 @@ impl AgentMuxApp {
             work_dir,
             tool_name: tool_name.to_owned(),
             command: command.to_owned(),
+            custom_name: None,
             status: if spawn_error.is_some() {
                 SessionStatus::Error
             } else {
@@ -604,47 +616,84 @@ impl AgentMuxApp {
         self.save_sessions();
     }
 
-    fn apply_action(&mut self, action: Action) {
+    fn apply_action(&mut self, ctx: egui::Context, action: Action) {
         match action {
             Action::Select(id) => self.selected_id = Some(id),
             Action::Close(id) => self.close_session(id),
-            // Both "+" buttons open the new-session dialog; the actual spawn
-            // happens on dialog submit (with the draft values).
+            // All "+" entry points spawn immediately, following the selected
+            // session's live cwd (see new_session_work_dir).
             Action::NewSession => {
-                if self.new_session.is_none() {
-                    self.new_session = Some(NewSessionDraft::new(
-                        default_work_dir().display().to_string(),
-                        default_shell_command(),
-                    ));
-                }
+                let work_dir = self.new_session_work_dir();
+                let command = default_shell_command();
+                let label = crate::session::derive_label(&command);
+                self.spawn_session(ctx, work_dir, &label, &command, Vec::new(), false);
             }
+            Action::StartRename(id) => {
+                let draft = self
+                    .sessions
+                    .get(&id)
+                    .map(|entry| entry.sidebar_label())
+                    .unwrap_or_default();
+                self.renaming = Some((id, draft));
+            }
+            Action::CommitRename(id, name) => {
+                if let Some(entry) = self.sessions.get_mut(&id) {
+                    entry.session.custom_name = commit_rename_text(name.as_deref());
+                }
+                self.renaming = None;
+                self.save_sessions();
+            }
+            Action::CancelRename => self.renaming = None,
         }
     }
 
-    /// Render the new-session dialog (if open) and act on its outcome.
-    fn update_new_session_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut draft) = self.new_session.take() else {
-            return;
-        };
-        match new_session::dialog(ctx, &mut draft) {
-            Some(new_session::DraftAction::Submit) => {
-                if let Err(error) = new_session::validate(&draft.work_dir, &draft.command) {
-                    draft.error = Some(error);
-                    self.new_session = Some(draft);
-                    return;
-                }
-                let work_dir = PathBuf::from(draft.work_dir.trim());
-                let (command, args) = new_session::split_command(&draft.command);
-                let label = if draft.label.trim().is_empty() {
-                    new_session::derive_label(&draft.command)
-                } else {
-                    draft.label.trim().to_owned()
-                };
-                self.spawn_session(ctx.clone(), work_dir, &label, &command, args, false);
-            }
-            Some(new_session::DraftAction::Cancel) => { /* drop draft */ }
-            None => self.new_session = Some(draft),
+    /// Workdir for a new session spawned via "+": the currently SELECTED
+    /// session's live cwd (falling back to its spawn work_dir); with no
+    /// selection, `default_work_dir()`.
+    fn new_session_work_dir(&self) -> PathBuf {
+        follow_selected_cwd(&self.sessions, self.selected_id).unwrap_or_else(default_work_dir)
+    }
+}
+
+impl SessionEntry {
+    /// Sidebar primary label: custom name > detected agent > tool name.
+    pub fn sidebar_label(&self) -> String {
+        if let Some(name) = &self.session.custom_name {
+            return name.clone();
         }
+        match &self.detection {
+            Some(detection) => {
+                let base = detection.agent.display_name();
+                if self.hook.is_some() {
+                    format!("{base} ⚡")
+                } else {
+                    base.to_owned()
+                }
+            }
+            None => self.session.tool_name.clone(),
+        }
+    }
+}
+
+/// The live cwd of the selected session, falling back to its spawn
+/// work_dir. Pure for tests.
+fn follow_selected_cwd(
+    sessions: &BTreeMap<u64, SessionEntry>,
+    selected: Option<u64>,
+) -> Option<PathBuf> {
+    let entry = sessions.get(&selected?)?;
+    Some(
+        project::live_cwd(entry.shell_pid).unwrap_or_else(|| entry.session.work_dir.clone()),
+    )
+}
+
+/// Rename commit semantics: whitespace-only text CLEARS the custom name.
+fn commit_rename_text(text: Option<&str>) -> Option<String> {
+    let trimmed = text?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
@@ -664,24 +713,28 @@ impl eframe::App for AgentMuxApp {
         // when no PTY events arrive.
         ui.ctx().request_repaint_after(REPAINT_BACKSTOP);
 
-        let mut action: Option<Action> = None;
-
+        // Actions are non-Copy, so each panel collects into its own local
+        // and the winners are merged after the closures release their
+        // borrows.
+        let mut sidebar_action: Option<Action> = None;
         egui::Panel::left("agentmux_sidebar")
             .default_size(240.0)
             .show(ui, |ui| {
-                action = sidebar::show(
+                sidebar_action = sidebar::show(
                     ui,
                     &self.sessions,
                     self.selected_id,
                     &mut self.collapsed_projects,
+                    &mut self.renaming,
                 );
             });
 
+        let mut tab_action: Option<Action> = None;
         egui::Panel::top("agentmux_tab_bar").show(ui, |ui| {
-            action = action.or_else(|| terminal_pane::tab_bar(ui, &self.sessions, self.selected_id));
+            tab_action = terminal_pane::tab_bar(ui, &self.sessions, self.selected_id);
         });
 
-        let mut central_action = None;
+        let mut central_action: Option<Action> = None;
         egui::CentralPanel::default().show(ui, |ui| {
             let selected = self
                 .selected_id
@@ -699,13 +752,12 @@ impl eframe::App for AgentMuxApp {
 
         self.toasts.show(ui.ctx());
 
-        if action.is_none() {
-            action = central_action;
-        }
+        let action = sidebar_action
+            .or(tab_action)
+            .or(central_action);
         if let Some(action) = action {
-            self.apply_action(action);
+            self.apply_action(ui.ctx().clone(), action);
         }
-        self.update_new_session_dialog(ui.ctx());
     }
 }
 
@@ -719,6 +771,7 @@ fn collect_metas(sessions: &BTreeMap<u64, SessionEntry>) -> Vec<SessionMeta> {
             work_dir: entry.session.work_dir.display().to_string(),
             command: entry.session.command.clone(),
             label: entry.session.tool_name.clone(),
+            custom_name: entry.session.custom_name.clone(),
         })
         .collect()
 }
@@ -761,6 +814,7 @@ fn default_shell_command() -> String {
 /// Pure and testable: returns `None` when the user is absent, their line is
 /// malformed (too few fields), or the shell field is empty. Malformed lines
 /// for OTHER users are skipped, not fatal.
+#[cfg(not(windows))] // /etc/passwd is a Unix concept; Windows uses cmd.exe
 fn login_shell_from_passwd(contents: &str, user: &str) -> Option<String> {
     for line in contents.lines() {
         let mut fields = line.split(':');
@@ -794,6 +848,7 @@ empty:x:1000:1000:empty shell:/home/empty:
 ";
 
     #[test]
+    #[cfg(not(windows))]
     fn passwd_parses_login_shell() {
         assert_eq!(
             login_shell_from_passwd(PASSWD, "catitw").as_deref(),
@@ -806,12 +861,14 @@ empty:x:1000:1000:empty shell:/home/empty:
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn passwd_missing_user_is_none() {
         assert_eq!(login_shell_from_passwd(PASSWD, "nobody-else"), None);
         assert_eq!(login_shell_from_passwd("", "catitw"), None);
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn passwd_malformed_and_empty_shells_are_none() {
         // The matching user's line is malformed (too few fields).
         assert_eq!(login_shell_from_passwd(PASSWD, "malformed"), None);
@@ -831,6 +888,7 @@ empty:x:1000:1000:empty shell:/home/empty:
                 work_dir: PathBuf::from(format!("/home/user/proj-{id}")),
                 tool_name: tool.to_owned(),
                 command: "bash".to_owned(),
+                custom_name: None,
                 status: SessionStatus::Running,
             },
             backend: None,
@@ -871,5 +929,90 @@ empty:x:1000:1000:empty shell:/home/empty:
         let mut sessions = BTreeMap::new();
         sessions.insert(1, entry(1, "Seed", true));
         assert!(collect_metas(&sessions).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rename_flow_tests {
+    use super::*;
+    use crate::detect::{AgentKind, AgentState, Detection};
+    use crate::project::ProjectInfo;
+
+    fn entry(id: u64, tool: &str) -> SessionEntry {
+        SessionEntry {
+            session: Session {
+                id,
+                work_dir: PathBuf::from(format!("/home/user/proj-{id}")),
+                tool_name: tool.to_owned(),
+                command: "bash".to_owned(),
+                custom_name: None,
+                status: SessionStatus::Running,
+            },
+            backend: None,
+            terminal_title: None,
+            spawn_error: None,
+            shell_pid: 0,
+            cwd: PathBuf::from(format!("/home/user/proj-{id}")),
+            project: ProjectInfo {
+                root: PathBuf::from(format!("/home/user/proj-{id}")),
+                name: format!("proj-{id}"),
+                branch: None,
+            },
+            detection: None,
+            agent_detected_at: None,
+            state_since: None,
+            detector: Detector::new(),
+            needs_rescan: false,
+            hook: None,
+            transient: false,
+        }
+    }
+
+    fn entry_with(id: u64, tool: &str, custom: Option<&str>, detection: Option<Detection>) -> SessionEntry {
+        let mut e = entry(id, tool);
+        e.session.custom_name = custom.map(str::to_owned);
+        e.detection = detection;
+        e
+    }
+
+    #[test]
+    fn sidebar_label_precedence() {
+        let detected = Detection { agent: AgentKind::ClaudeCode, state: AgentState::Working };
+        // custom name wins over agent label and tool name.
+        let e = entry_with(1, "Shell", Some("my agent"), Some(detected));
+        assert_eq!(e.sidebar_label(), "my agent");
+        // agent label beats tool name.
+        let e = entry_with(2, "Shell", None, Some(detected));
+        assert_eq!(e.sidebar_label(), "Claude Code");
+        // tool name last.
+        let e = entry_with(3, "Shell", None, None);
+        assert_eq!(e.sidebar_label(), "Shell");
+    }
+
+    #[test]
+    fn follow_selected_cwd_falls_back_to_spawn_dir() {
+        let mut sessions = BTreeMap::new();
+        let mut e = entry(1, "Shell");
+        e.cwd = PathBuf::from("/live/cwd");
+        e.session.work_dir = PathBuf::from("/spawn/dir");
+        sessions.insert(1, e);
+
+        // No live cwd available (shell_pid 0) → spawn work_dir.
+        assert_eq!(
+            follow_selected_cwd(&sessions, Some(1)),
+            Some(PathBuf::from("/spawn/dir"))
+        );
+        // No selection → None → caller uses default_work_dir.
+        assert_eq!(follow_selected_cwd(&sessions, None), None);
+        // Unknown id → None.
+        assert_eq!(follow_selected_cwd(&sessions, Some(99)), None);
+    }
+
+    #[test]
+    fn rename_commit_clears_on_empty() {
+        assert_eq!(commit_rename_text(Some("  ")), None);
+        assert_eq!(commit_rename_text(Some("")), None);
+        assert_eq!(commit_rename_text(None), None);
+        assert_eq!(commit_rename_text(Some("  new name  ")), Some("new name".to_owned()));
     }
 }

@@ -57,7 +57,11 @@ Applied once at startup via `ctx.set_visuals` + `style_mut_of(Dark, …)`
 
 - **sidebar.rs**: "Sessions" 14px strong; selected row = accent tint (16%)
   + 2.5px left accent bar + pressed tint (24%); basename stays readable on
-  selection; tree glyphs (▼/◆/●) already covered by fonts.
+  selection; tree glyphs (▼/◆/●) already covered by fonts. Session rows
+  also carry a right-click context menu ("Rename session") and an inline
+  single-line rename edit (Enter commits / Esc cancels) while renaming.
+- The empty-state "+ New session" button spawns directly (no dialog) like
+  the toolbar "+" buttons, following the selected session's cwd.
 - **terminal_pane.rs**: custom-drawn tabs — active = panel fill (connects to
   the terminal) with a bottom accent line; inactive muted, faint fill on
   hover; close × subtle (70% weak) until hovered; composed empty state;
