@@ -98,8 +98,15 @@ fn tab(
     } else {
         visuals.weak_text_color()
     };
+    // painter.galley anchors the galley's TOP-LEFT at the position, so the
+    // y must back off by half the text height to sit on the rect's midline
+    // (painter.text's Align2 doesn't apply to galley). The dot/⚡ prefix is
+    // part of the same galley, so it shares the midline.
     painter.galley(
-        egui::pos2(rect.left() + PAD_X, rect.center().y),
+        egui::pos2(
+            rect.left() + PAD_X,
+            rect.center().y - galley.size().y / 2.0,
+        ),
         galley,
         text_color,
     );
