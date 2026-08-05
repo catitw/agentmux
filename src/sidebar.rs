@@ -39,7 +39,12 @@ pub fn show(
     action
 }
 
-/// One sidebar row: status dot, tool name, right-aligned work-dir basename.
+/// One sidebar row: status dot, primary label, right-aligned work-dir
+/// basename.
+///
+/// With an agent detected the row shows the agent's display name and a
+/// state-colored dot (orange = blocked, blue = working, gray = idle);
+/// otherwise the process-status dot and tool name as before.
 fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
@@ -58,8 +63,14 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
 
     let session = &entry.session;
 
+    // Agent layer takes visual precedence when present.
+    let (dot_color, primary_label) = match &entry.detection {
+        Some(detection) => (detection.state.color(), detection.agent.display_name()),
+        None => (session.status.color(), session.tool_name.as_str()),
+    };
+
     let dot_center = egui::pos2(rect.left() + 12.0, rect.center().y);
-    ui.painter().circle_filled(dot_center, 4.5, session.status.color());
+    ui.painter().circle_filled(dot_center, 4.5, dot_color);
 
     let text_color = if is_selected {
         visuals.selection.stroke.color
@@ -69,7 +80,7 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
     ui.painter().text(
         egui::pos2(rect.left() + 24.0, rect.center().y),
         Align2::LEFT_CENTER,
-        &session.tool_name,
+        primary_label,
         egui::FontId::proportional(14.0),
         text_color,
     );
@@ -87,11 +98,20 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
         visuals.weak_text_color(),
     );
 
+    let agent_line = match &entry.detection {
+        Some(detection) => format!(
+            "agent: {} ({})\n",
+            detection.agent.display_name(),
+            detection.state.label()
+        ),
+        None => String::new(),
+    };
     response.on_hover_text(format!(
-        "session {}: {} — {}\n{}\nstatus: {}",
+        "session {}: {} — {}\n{}{}\nstatus: {}",
         session.id,
         session.tool_name,
         session.command,
+        agent_line,
         session.work_dir.display(),
         session.status.label()
     ))

@@ -11,8 +11,11 @@ eframe = { version = "0.35", default-features = false, features = [
     "x11",           # Linux/X11 windowing.
     "wayland",       # Linux/Wayland windowing.
 ] }
+alacritty_terminal = "0.26" # grid/Cell access for screen-region detection
 egui = "0.35"
-egui_term = { git = "https://github.com/kemokempo/egui_term", branch = "main" }
+egui_term = { git = "https://github.com/kemokempo/egui_term", rev = "31bbc7a" }
+regex = "1"
+sysinfo = "0.39"
 
 # Enable wgpu's default backend features (Vulkan/Metal/DX12/GLES) so the app
 # can find a GPU adapter on every platform. Feature-unifies with eframe's wgpu.

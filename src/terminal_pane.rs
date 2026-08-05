@@ -15,10 +15,16 @@ pub fn tab_bar(
     ui.horizontal(|ui| {
         for (id, entry) in sessions {
             let is_selected = selected == Some(*id);
-            let label = entry
-                .terminal_title
-                .as_deref()
-                .unwrap_or(&entry.session.tool_name);
+            // Tab label: agent marker (state-colored dot + agent name) when
+            // an agent is detected, else the terminal title / tool name.
+            let label: egui::WidgetText = match &entry.detection {
+                Some(detection) => tab_label_with_marker(detection),
+                None => entry
+                    .terminal_title
+                    .as_deref()
+                    .unwrap_or(&entry.session.tool_name)
+                    .into(),
+            };
             if ui.selectable_label(is_selected, label).clicked() {
                 action = Some(Action::Select(*id));
             }
@@ -36,6 +42,32 @@ pub fn tab_bar(
         }
     });
     action
+}
+
+/// Tab label for a detected agent: a state-colored "●" dot followed by the
+/// agent's display name (e.g. "● Claude Code").
+fn tab_label_with_marker(detection: &crate::detect::Detection) -> egui::WidgetText {
+    let font = egui::FontId::proportional(14.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        "● ",
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color: detection.state.color(),
+            ..Default::default()
+        },
+    );
+    job.append(
+        detection.agent.display_name(),
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color: egui::Color32::PLACEHOLDER, // inherits widget color
+            ..Default::default()
+        },
+    );
+    job.into()
 }
 
 /// Render the selected session's embedded terminal, or a failure placeholder
