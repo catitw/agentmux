@@ -91,10 +91,12 @@ pub fn terminal_view(
     ui: &mut egui::Ui,
     entry: &mut SessionEntry,
     terminal_font: &egui_term::TerminalFont,
+    terminal_theme: &egui_term::TerminalTheme,
 ) {
     match &mut entry.backend {
         Some(backend) => {
             let view = TerminalView::new(ui, backend)
+                .set_theme(terminal_theme.clone())
                 .set_font(terminal_font.clone())
                 .set_focus(true)
                 .set_size(ui.available_size());

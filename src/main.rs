@@ -12,6 +12,7 @@ mod session;
 mod sidebar;
 mod status;
 mod terminal_pane;
+mod theme;
 
 use app::AgentMuxApp;
 

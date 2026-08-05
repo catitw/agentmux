@@ -8,7 +8,7 @@ use crate::notify::ToastQueue;
 use crate::persist::{self, SessionMeta};
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
-use crate::{detect, fonts, hooks, sidebar, terminal_pane};
+use crate::{detect, fonts, hooks, sidebar, terminal_pane, theme};
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -82,9 +82,12 @@ pub struct AgentMuxApp {
     /// Optional transition log (`AGENTMUX_DEBUG_LOG`), appended on every
     /// detection transition: `session N: agent=X state=Y source=hook|screen`.
     debug_log: Option<PathBuf>,
-    /// Terminal font family (primary = egui monospace + system fallbacks),
-    /// built once at startup.
+    /// Terminal font family (preferred terminal font or egui monospace +
+    /// system fallbacks), built once at startup.
     terminal_font: egui_term::TerminalFont,
+    /// Terminal color theme (ghostty palette or egui_term default), built
+    /// once at startup.
+    terminal_theme: egui_term::TerminalTheme,
     /// Open new-session dialog draft (None = dialog closed).
     new_session: Option<NewSessionDraft>,
 }
@@ -102,6 +105,12 @@ impl AgentMuxApp {
                 font_setup.registered.join(", ")
             );
         }
+        // Terminal theme (ghostty palette if obtainable), cached once.
+        let (terminal_theme, palette_source) = theme::load_terminal_theme();
+        eprintln!(
+            "agentmux theme: font '{}', palette {palette_source}",
+            font_setup.terminal_font_name
+        );
 
         let (pty_sender, pty_receiver) = mpsc::channel();
         let hook_server = ReportServer::start().expect("failed to start hook report server");
@@ -125,6 +134,7 @@ impl AgentMuxApp {
             hook_server,
             debug_log,
             terminal_font: font_setup.terminal_font,
+            terminal_theme,
             new_session: None,
         };
         // Session startup: AGENTMUX_SEED_COMMAND (verification hook) takes
@@ -617,7 +627,12 @@ impl eframe::App for AgentMuxApp {
                 .selected_id
                 .and_then(|id| self.sessions.get_mut(&id));
             match selected {
-                Some(entry) => terminal_pane::terminal_view(ui, entry, &self.terminal_font),
+                Some(entry) => terminal_pane::terminal_view(
+                    ui,
+                    entry,
+                    &self.terminal_font,
+                    &self.terminal_theme,
+                ),
                 None => terminal_pane::empty_placeholder(ui),
             }
         });

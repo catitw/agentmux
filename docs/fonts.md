@@ -49,9 +49,13 @@ Startup logging: `agentmux fonts: registered fallbacks: <face names…>` or
 
 ## How to override
 
-The preference lists are hardcoded in `fonts.rs::setup_fonts`. To force a
-specific font: install it and adjust the lists (or reorder them); no config
-file is read. `AGENTMUX_SEED_COMMAND` (see below) does not affect fonts.
+- **Terminal font**: `AGENTMUX_TERMINAL_FONT=<exact family name>` wins over
+  the preference list (default: `Maple Mono NF CN` — the user's ghostty
+  font — then common Nerd Font terminal faces, then egui's Hack). The
+  matched font drives terminal cell metrics; see docs/terminal-theme.md.
+- The fallback preference lists are hardcoded in `fonts.rs::setup_fonts`
+  (icon families, CJK families); install a font and adjust the lists to
+  force a specific one. `AGENTMUX_SEED_COMMAND` does not affect fonts.
 
 ## Bundled font & attribution
 
