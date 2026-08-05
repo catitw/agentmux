@@ -35,8 +35,12 @@ Deliberately minimal: no dir-picker crate, no clap, three text fields.
 
   Array order = sidebar order. Only metadata persists — no PIDs, no status.
 - **Save**: after every spawn and every close (both are rare; no debounce).
-  Atomic: write `sessions.json.tmp` then rename. Includes ALL live sessions
-  (even ones whose agent is running).
+  Atomic: write `sessions.json.tmp` then rename. Includes all live sessions
+  (even ones whose agent is running) EXCEPT transient ones: sessions spawned
+  via `AGENTMUX_SEED_COMMAND` are verification scaffolding and are never
+  persisted. When every live session is transient (a pure seed run), the
+  file is not written at all — no artifact is created and an existing file
+  with real sessions stays untouched.
 - **Restore**: at startup, if the file exists and parses, spawn one session
   per entry; entries whose `work_dir` no longer exists are skipped with a
   per-entry warning. Missing file → "no sessions file, seeded default";
@@ -68,12 +72,12 @@ live state.
   bad dir / file-as-dir / empty command), label derivation (shells → Shell,
   agents → basename), command splitting.
 - Scripted e2e with `XDG_CONFIG_HOME=/tmp/amx-p4`:
-  1. `AGENTMUX_SEED_COMMAND=omp` launch → `sessions.json` exists, parses,
-     exactly 1 entry (`{work_dir: $HOME, command: "/bin/sh", label:
-     "Shell"}` — the seed runs via `sh -c`, and args are not part of the
-     schema).
-  2. Plain launch → `agentmux: restored 1 session(s) from
-     /tmp/amx-p4/agentmux/sessions.json`.
+  1. `AGENTMUX_SEED_COMMAND=omp` launch → `sessions.json` is NOT written
+     (seed sessions are transient; only the hook port file appears). A
+     pre-existing `sessions.json` is left untouched.
+  2. Plain launch (no seed) → a default session is seeded and persisted;
+     the next plain launch restores it: `agentmux: restored 1 session(s)
+     from /tmp/amx-p4/agentmux/sessions.json`.
   3. Missing-dir entry → `skipping session, work dir missing` + `restored 0
      session(s)`.
   4. Garbage file → `sessions file malformed (…), seeded default`.

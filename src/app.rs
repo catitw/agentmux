@@ -55,6 +55,9 @@ pub struct SessionEntry {
     /// Live hook authority (herdr Channel C); while present and its agent
     /// process is alive, its state overrides the screen engine.
     pub hook: Option<HookAuthority>,
+    /// Verification scaffolding (AGENTMUX_SEED_COMMAND sessions): never
+    /// written to sessions.json.
+    pub transient: bool,
 }
 
 /// UI actions produced by the sidebar / tab bar, applied by the app after
@@ -180,6 +183,7 @@ impl AgentMuxApp {
                     "Shell",
                     &seed_command,
                     seed_args,
+                    true, // verification scaffolding: never persisted
                 );
             }
             None => {
@@ -193,6 +197,7 @@ impl AgentMuxApp {
                             "Shell",
                             &default_shell_command(),
                             Vec::new(),
+                            false,
                         );
                         return app;
                     }
@@ -215,6 +220,7 @@ impl AgentMuxApp {
                             &meta.label,
                             &meta.command,
                             Vec::new(),
+                            false,
                         );
                         restored += 1;
                     }
@@ -233,6 +239,7 @@ impl AgentMuxApp {
                         "Shell",
                         &default_shell_command(),
                         Vec::new(),
+                        false,
                     );
                 }
                 Err(persist::LoadError::Malformed(err)) => {
@@ -243,6 +250,7 @@ impl AgentMuxApp {
                         "Shell",
                         &default_shell_command(),
                         Vec::new(),
+                        false,
                     );
                 }
                 }
@@ -252,7 +260,8 @@ impl AgentMuxApp {
     }
 
     /// Spawn a new session: a terminal running `command` (with `args`) in
-    /// `work_dir`.
+    /// `work_dir`. `transient` marks verification scaffolding that must not
+    /// be persisted (AGENTMUX_SEED_COMMAND sessions).
     fn spawn_session(
         &mut self,
         ctx: egui::Context,
@@ -260,6 +269,7 @@ impl AgentMuxApp {
         tool_name: &str,
         command: &str,
         args: Vec<String>,
+        transient: bool,
     ) {
         let id = self.next_id;
         self.next_id += 1;
@@ -314,6 +324,7 @@ impl AgentMuxApp {
                 detector: Detector::new(),
                 needs_rescan: false,
                 hook: None,
+                transient,
             },
         );
         self.save_sessions();
@@ -322,15 +333,13 @@ impl AgentMuxApp {
     /// Persist all live sessions' metadata (order = sidebar order). Failures
     /// are logged, never fatal.
     fn save_sessions(&self) {
-        let metas: Vec<SessionMeta> = self
-            .sessions
-            .values()
-            .map(|entry| SessionMeta {
-                work_dir: entry.session.work_dir.display().to_string(),
-                command: entry.session.command.clone(),
-                label: entry.session.tool_name.clone(),
-            })
-            .collect();
+        let metas = collect_metas(&self.sessions);
+        // When every live session is transient (a pure AGENTMUX_SEED_COMMAND
+        // run), do not touch the file at all: no artifact is created and an
+        // existing file with real sessions stays intact.
+        if metas.is_empty() {
+            return;
+        }
         match persist::sessions_path() {
             Ok(path) => {
                 if let Err(err) = persist::save(&path, &metas) {
@@ -631,7 +640,7 @@ impl AgentMuxApp {
                 } else {
                     draft.label.trim().to_owned()
                 };
-                self.spawn_session(ctx.clone(), work_dir, &label, &command, args);
+                self.spawn_session(ctx.clone(), work_dir, &label, &command, args, false);
             }
             Some(new_session::DraftAction::Cancel) => { /* drop draft */ }
             None => self.new_session = Some(draft),
@@ -700,6 +709,20 @@ impl eframe::App for AgentMuxApp {
     }
 }
 
+/// The metadata of all PERSISTENT sessions (transient seed scaffolding is
+/// excluded), in sidebar order. Pure for tests.
+fn collect_metas(sessions: &BTreeMap<u64, SessionEntry>) -> Vec<SessionMeta> {
+    sessions
+        .values()
+        .filter(|entry| !entry.transient)
+        .map(|entry| SessionMeta {
+            work_dir: entry.session.work_dir.display().to_string(),
+            command: entry.session.command.clone(),
+            label: entry.session.tool_name.clone(),
+        })
+        .collect()
+}
+
 /// Default work directory for new sessions: `$HOME` (or `$USERPROFILE` on
 /// Windows), falling back to the current directory.
 fn default_work_dir() -> PathBuf {
@@ -709,7 +732,9 @@ fn default_work_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Default shell for new sessions: `$SHELL` on Unix, `cmd.exe` on Windows.
+/// Default shell for new sessions. Resolution order on Unix:
+/// `$SHELL` (if set and non-empty) → the login shell from `/etc/passwd`
+/// (pure parse, no subprocesses) → `bash`. Windows: `cmd.exe`.
 fn default_shell_command() -> String {
     #[cfg(windows)]
     {
@@ -717,6 +742,134 @@ fn default_shell_command() -> String {
     }
     #[cfg(not(windows))]
     {
-        std::env::var("SHELL").unwrap_or_else(|_| "bash".to_owned())
+        if let Some(shell) = std::env::var_os("SHELL").filter(|value| !value.is_empty()) {
+            return shell.to_string_lossy().into_owned();
+        }
+        let user = std::env::var("USER").ok().filter(|value| !value.is_empty());
+        if let Some(user) = user
+            && let Ok(contents) = std::fs::read_to_string("/etc/passwd")
+            && let Some(shell) = login_shell_from_passwd(&contents, &user)
+        {
+            return shell;
+        }
+        "bash".to_owned()
+    }
+}
+
+/// Parse the login shell (field 7) for `user` from `/etc/passwd` contents.
+///
+/// Pure and testable: returns `None` when the user is absent, their line is
+/// malformed (too few fields), or the shell field is empty. Malformed lines
+/// for OTHER users are skipped, not fatal.
+fn login_shell_from_passwd(contents: &str, user: &str) -> Option<String> {
+    for line in contents.lines() {
+        let mut fields = line.split(':');
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        if name != user {
+            continue;
+        }
+        // Fields: name, password, uid, gid, gecos, home, shell.
+        let shell = fields.nth(5)?.trim();
+        if shell.is_empty() || shell.starts_with('#') {
+            return None;
+        }
+        return Some(shell.to_owned());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::ProjectInfo;
+
+    const PASSWD: &str = "\
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+catitw:x:1000:1000:Cat It W:/home/catitw:/usr/bin/fish
+malformed:x:1000:1000:no shell field here
+empty:x:1000:1000:empty shell:/home/empty:
+";
+
+    #[test]
+    fn passwd_parses_login_shell() {
+        assert_eq!(
+            login_shell_from_passwd(PASSWD, "catitw").as_deref(),
+            Some("/usr/bin/fish")
+        );
+        assert_eq!(
+            login_shell_from_passwd(PASSWD, "root").as_deref(),
+            Some("/bin/bash")
+        );
+    }
+
+    #[test]
+    fn passwd_missing_user_is_none() {
+        assert_eq!(login_shell_from_passwd(PASSWD, "nobody-else"), None);
+        assert_eq!(login_shell_from_passwd("", "catitw"), None);
+    }
+
+    #[test]
+    fn passwd_malformed_and_empty_shells_are_none() {
+        // The matching user's line is malformed (too few fields).
+        assert_eq!(login_shell_from_passwd(PASSWD, "malformed"), None);
+        // The matching user's shell field is empty.
+        assert_eq!(login_shell_from_passwd(PASSWD, "empty"), None);
+        // Other users' malformed lines are skipped, not fatal.
+        assert_eq!(
+            login_shell_from_passwd(PASSWD, "catitw").as_deref(),
+            Some("/usr/bin/fish")
+        );
+    }
+
+    fn entry(id: u64, tool: &str, transient: bool) -> SessionEntry {
+        SessionEntry {
+            session: Session {
+                id,
+                work_dir: PathBuf::from(format!("/home/user/proj-{id}")),
+                tool_name: tool.to_owned(),
+                command: "bash".to_owned(),
+                status: SessionStatus::Running,
+            },
+            backend: None,
+            terminal_title: None,
+            spawn_error: None,
+            shell_pid: 0,
+            cwd: PathBuf::from(format!("/home/user/proj-{id}")),
+            project: ProjectInfo {
+                root: PathBuf::from(format!("/home/user/proj-{id}")),
+                name: format!("proj-{id}"),
+                branch: None,
+            },
+            detection: None,
+            agent_detected_at: None,
+            state_since: None,
+            detector: Detector::new(),
+            needs_rescan: false,
+            hook: None,
+            transient,
+        }
+    }
+
+    #[test]
+    fn collect_metas_skips_transient_sessions() {
+        let mut sessions = BTreeMap::new();
+        sessions.insert(1, entry(1, "Shell", false));
+        sessions.insert(2, entry(2, "Seed", true));
+        sessions.insert(3, entry(3, "omp", false));
+        let metas = collect_metas(&sessions);
+        assert_eq!(metas.len(), 2, "transient seed session excluded");
+        assert_eq!(metas[0].label, "Shell");
+        assert_eq!(metas[1].label, "omp");
+        assert_eq!(metas[0].work_dir, "/home/user/proj-1");
+    }
+
+    #[test]
+    fn collect_metas_all_transient_is_empty() {
+        let mut sessions = BTreeMap::new();
+        sessions.insert(1, entry(1, "Seed", true));
+        assert!(collect_metas(&sessions).is_empty());
     }
 }
