@@ -8,6 +8,7 @@ mod hooks;
 mod new_session;
 mod notify;
 mod persist;
+mod project;
 mod session;
 mod sidebar;
 mod status;

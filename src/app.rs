@@ -6,9 +6,10 @@ use crate::hooks::{HookAuthority, HookState, ReportServer};
 use crate::new_session::{self, NewSessionDraft};
 use crate::notify::ToastQueue;
 use crate::persist::{self, SessionMeta};
+use crate::project::{ProjectClassifier, ProjectInfo};
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
-use crate::{detect, fonts, hooks, sidebar, terminal_pane, theme};
+use crate::{detect, fonts, hooks, project, sidebar, terminal_pane, theme};
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -36,6 +37,11 @@ pub struct SessionEntry {
     pub spawn_error: Option<String>,
     /// Shell PID from the backend's PTY — root of the agent process scan.
     pub shell_pid: u32,
+    /// Current working directory of the session (live from /proc on Linux,
+    /// else the spawn work_dir). Drives the project grouping.
+    pub cwd: PathBuf,
+    /// Last project/branch classification of `cwd`.
+    pub project: ProjectInfo,
     /// Current agent-layer detection (`None` = no agent running).
     pub detection: Option<Detection>,
     /// When the current agent was first detected (toast timing).
@@ -88,6 +94,10 @@ pub struct AgentMuxApp {
     /// Terminal color theme (ghostty palette or egui_term default), built
     /// once at startup.
     terminal_theme: egui_term::TerminalTheme,
+    /// Project/branch classifier with its HEAD-read cache.
+    classifier: ProjectClassifier,
+    /// Sidebar projects collapsed by the user (project root paths).
+    collapsed_projects: std::collections::HashSet<PathBuf>,
     /// Open new-session dialog draft (None = dialog closed).
     new_session: Option<NewSessionDraft>,
 }
@@ -135,6 +145,8 @@ impl AgentMuxApp {
             debug_log,
             terminal_font: font_setup.terminal_font,
             terminal_theme,
+            classifier: ProjectClassifier::new(),
+            collapsed_projects: std::collections::HashSet::new(),
             new_session: None,
         };
         // Session startup: AGENTMUX_SEED_COMMAND (verification hook) takes
@@ -142,6 +154,11 @@ impl AgentMuxApp {
         // one default session so the window is never empty. The seed value
         // is a shell command line, run via `sh -c` (alacritty's tty layer
         // treats the shell field as a program path, not a command string).
+        // AGENTMUX_SEED_DIR overrides the seeded session's workdir
+        // (verification/testing hook; default unchanged).
+        let seed_dir = std::env::var_os("AGENTMUX_SEED_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(default_work_dir);
         let seed = std::env::var_os("AGENTMUX_SEED_COMMAND")
             .map(|cmd| cmd.to_string_lossy().into_owned());
         match seed {
@@ -152,7 +169,7 @@ impl AgentMuxApp {
                 let (seed_command, seed_args) = ("/bin/sh".to_owned(), vec!["-c".to_owned(), cmd]);
                 app.spawn_session(
                     cc.egui_ctx.clone(),
-                    default_work_dir(),
+                    seed_dir,
                     "Shell",
                     &seed_command,
                     seed_args,
@@ -268,6 +285,11 @@ impl AgentMuxApp {
 
         let shell_pid = backend.as_ref().map(|b| b.pty_id()).unwrap_or(0);
 
+        // Initial classification: spawn work_dir (the live cwd will be
+        // picked up on the next process tick).
+        let cwd = session.work_dir.clone();
+        let project = self.classifier.classify(&cwd, Instant::now());
+
         self.selected_id = Some(id);
         self.sessions.insert(
             id,
@@ -277,6 +299,8 @@ impl AgentMuxApp {
                 terminal_title: None,
                 spawn_error,
                 shell_pid,
+                cwd,
+                project,
                 detection: None,
                 agent_detected_at: None,
                 state_since: None,
@@ -441,6 +465,11 @@ impl AgentMuxApp {
             }
             if process_tick {
                 entry.detector.candidates = detect::process::scan_agents(&self.system, entry.shell_pid);
+                // Live cwd (Linux /proc) + project/branch re-classification.
+                // Branch re-reads are cadence-cached per project root.
+                entry.cwd = project::live_cwd(entry.shell_pid)
+                    .unwrap_or_else(|| entry.session.work_dir.clone());
+                entry.project = self.classifier.classify(&entry.cwd, now);
             }
 
             // Hook authority liveness: released when the resolved agent
@@ -615,7 +644,12 @@ impl eframe::App for AgentMuxApp {
         egui::Panel::left("agentmux_sidebar")
             .default_size(240.0)
             .show(ui, |ui| {
-                action = sidebar::show(ui, &self.sessions, self.selected_id);
+                action = sidebar::show(
+                    ui,
+                    &self.sessions,
+                    self.selected_id,
+                    &mut self.collapsed_projects,
+                );
             });
 
         egui::Panel::top("agentmux_tab_bar").show(ui, |ui| {

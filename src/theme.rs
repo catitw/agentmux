@@ -9,6 +9,7 @@
 //! 2. explicit `palette = N=#RRGGBB` / `background` / `foreground` lines in
 //!    `~/.config/ghostty/config` (`$GHOSTTY_CONFIG_DIR` overrides);
 //! 3. egui_term's default palette.
+//!
 //! `AGENTMUX_TERMINAL_PALETTE=ghostty|default` forces the source.
 //!
 //! All parsing is dependency-free; malformed lines are skipped and never
@@ -76,26 +77,22 @@ pub fn load_terminal_theme() -> (egui_term::TerminalTheme, PaletteSource) {
 fn resolve_ghostty_palette() -> (Option<ParsedPalette>, PaletteSource) {
     // (a) Resolved config via the CLI (theme included). This is the source
     // of truth even when the user's config file is empty.
-    if let Ok(output) = std::process::Command::new("ghostty").arg("+show-config").output() {
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(parsed) = parse_palette_lines(&text) {
-                return (Some(parsed), PaletteSource::GhosttyShowConfig);
-            }
-        }
+    if let Ok(output) = std::process::Command::new("ghostty").arg("+show-config").output()
+        && output.status.success()
+        && let Some(parsed) = parse_palette_lines(&String::from_utf8_lossy(&output.stdout))
+    {
+        return (Some(parsed), PaletteSource::GhosttyShowConfig);
     }
 
     // (b) Explicit palette/background/foreground lines in the config file.
     let config_dir = std::env::var_os("GHOSTTY_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| dirs::config_dir().map(|dir| dir.join("ghostty")));
-    if let Some(config_dir) = config_dir {
-        let config_path = config_dir.join("config");
-        if let Ok(content) = std::fs::read_to_string(config_path) {
-            if let Some(parsed) = parse_palette_lines(&content) {
-                return (Some(parsed), PaletteSource::GhosttyConfigFile);
-            }
-        }
+    if let Some(config_dir) = config_dir
+        && let Ok(content) = std::fs::read_to_string(config_dir.join("config"))
+        && let Some(parsed) = parse_palette_lines(&content)
+    {
+        return (Some(parsed), PaletteSource::GhosttyConfigFile);
     }
 
     (None, PaletteSource::Default)
@@ -128,10 +125,10 @@ fn parse_palette_lines(text: &str) -> Option<ParsedPalette> {
                 let Ok(index) = index_str.trim().parse::<usize>() else {
                     continue;
                 };
-                if index < 16 {
-                    if let Some(hex) = normalize_hex(hex.trim()) {
-                        colors[index] = Some(hex);
-                    }
+                if index < 16
+                    && let Some(hex) = normalize_hex(hex.trim())
+                {
+                    colors[index] = Some(hex);
                 }
             }
             "background" => {

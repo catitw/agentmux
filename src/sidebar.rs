@@ -1,16 +1,20 @@
-//! Left panel: the session overview list (status dot + tool + work dir).
+//! Left panel: the session overview, grouped as a project → branch →
+//! session tree (see crate::project).
 
 use crate::app::{Action, SessionEntry};
 use egui::{Align, Align2, Color32};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 
 const ROW_HEIGHT: f32 = 28.0;
 
 /// Render the sidebar. Returns the action the user requested, if any.
+/// `collapsed` holds project roots the user collapsed (not persisted).
 pub fn show(
     ui: &mut egui::Ui,
     sessions: &BTreeMap<u64, SessionEntry>,
     selected: Option<u64>,
+    collapsed: &mut HashSet<PathBuf>,
 ) -> Option<Action> {
     let mut action = None;
 
@@ -28,15 +32,93 @@ pub fn show(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (id, entry) in sessions {
-                let row = session_row(ui, entry, selected == Some(*id));
-                if row.clicked() {
-                    action = Some(Action::Select(*id));
+            let grouping = crate::project::group_sessions(
+                &sessions
+                    .iter()
+                    .map(|(id, entry)| (*id, entry.project.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            for group in grouping {
+                project_header(ui, &group, collapsed);
+                if collapsed.contains(&group.path) {
+                    continue;
                 }
+                ui.indent(egui::Id::new(("project", &group.path)), |ui| {
+                    if group.branches.is_empty() {
+                        // Non-git project: sessions directly under it.
+                        for id in &group.sessions {
+                            session_row_with_select(ui, sessions, *id, selected, &mut action);
+                        }
+                    } else {
+                        for branch in &group.branches {
+                            // "⎇" (U+2387) exists in no available font; the
+                            // diamond U+25C6 is covered by the CJK fallback.
+                            ui.label(
+                                egui::RichText::new(format!("◆ {}", branch.branch)).weak(),
+                            );
+                            ui.indent(
+                                egui::Id::new(("branch", &group.path, &branch.branch)),
+                                |ui| {
+                                    for id in &branch.sessions {
+                                        session_row_with_select(
+                                            ui, sessions, *id, selected, &mut action,
+                                        );
+                                    }
+                                },
+                            );
+                        }
+                    }
+                });
             }
         });
 
     action
+}
+
+/// One project header row: collapse chevron + name; tooltip shows the full
+/// path. Click toggles collapse.
+fn project_header(
+    ui: &mut egui::Ui,
+    group: &crate::project::ProjectGroup,
+    collapsed: &mut HashSet<PathBuf>,
+) {
+    let is_collapsed = collapsed.contains(&group.path);
+    // U+25B6/U+25BC: covered by egui's defaults and the CJK fallback
+    // (the small U+25B8/U+25BE variants are not).
+    let chevron = if is_collapsed { "▶" } else { "▼" };
+    let header = ui
+        .add(
+            egui::Label::new(
+                egui::RichText::new(format!("{chevron} {}", group.name)).strong(),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_text(group.path.display().to_string());
+    if header.clicked() {
+        if is_collapsed {
+            collapsed.remove(&group.path);
+        } else {
+            collapsed.insert(group.path.clone());
+        }
+    }
+}
+
+/// Session row + click-to-select, with a small top spacing for readability
+/// inside the tree.
+fn session_row_with_select(
+    ui: &mut egui::Ui,
+    sessions: &BTreeMap<u64, SessionEntry>,
+    id: u64,
+    selected: Option<u64>,
+    action: &mut Option<Action>,
+) {
+    let Some(entry) = sessions.get(&id) else {
+        return;
+    };
+    let row = session_row(ui, entry, selected == Some(id));
+    if row.clicked() {
+        *action = Some(Action::Select(id));
+    }
 }
 
 /// One sidebar row: status dot, primary label, right-aligned work-dir

@@ -222,6 +222,7 @@ fn register_face(
 
 /// Add raw font bytes to the chains (also used for the bundled symbols
 /// font). `ui_fallbacks` is `None` for terminal-only fonts.
+#[allow(clippy::too_many_arguments)] // one registration point, six roles
 fn register_bytes(
     definitions: &mut FontDefinitions,
     terminal_chain: &mut Vec<String>,
