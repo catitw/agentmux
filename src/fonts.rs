@@ -25,6 +25,13 @@ use egui::{FontData, FontDefinitions, FontFamily, FontId};
 /// Custom font family used by the embedded terminals.
 pub const TERMINAL_FAMILY: &str = "agentmux-terminal";
 
+/// Bundled Nerd Font SymbolsOnly (Mono variant), nerd-fonts release v3.5.0,
+/// sha256 2dc316f2505a0cbfbcf6060a1b4ba85b0a2974189e30c0037cdedc436a25a4ff.
+/// Guarantees Nerd Font icon coverage on every machine (system fonts are
+/// preferred; this is the floor). License: SIL OFL 1.1 (individual icon
+/// sets retain their own licenses) — see docs/fonts.md.
+const BUNDLED_SYMBOLS: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+
 /// Result of the startup font setup.
 pub struct FontSetup {
     /// Terminal font (primary = egui's monospace font) for
@@ -52,11 +59,23 @@ pub fn setup_fonts(ctx: &egui::Context) -> FontSetup {
     let mut ui_fallbacks = Vec::new();
     let mut registered = Vec::new();
 
-    // Preference order: icons, then CJK, then emoji. Each found face is
-    // registered once and added to all three chains.
+    // Preference order: icons (system Nerd Font, then the bundled symbols
+    // floor), then CJK, then emoji. Each face is registered once and added
+    // to all three chains.
     if let Some(id) = find_icon_face(&db) {
         register_face(&db, id, &mut definitions, &mut terminal_chain, &mut ui_fallbacks, &mut registered);
     }
+    // Bundled symbols: only a fallback for glyphs the system fonts lack,
+    // so it never shadows the system Nerd Font.
+    register_bytes(
+        &mut definitions,
+        &mut terminal_chain,
+        &mut ui_fallbacks,
+        &mut registered,
+        "bundled SymbolsNerdFontMono (v3.5.0)",
+        BUNDLED_SYMBOLS.into(),
+        0,
+    );
     if let Some(id) = query_face(
         &db,
         &[
@@ -158,19 +177,31 @@ fn register_face(
         }
         fontdb::Source::Binary(data) => data.as_ref().as_ref().to_vec().into(),
     };
-
-    let base_name = db
+    let label = db
         .face(id)
         .map(|face| face.post_script_name.clone())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| format!("agentmux-face-{}", registered.len()));
-    let mut key = base_name.clone();
+
+    register_bytes(definitions, terminal_chain, ui_fallbacks, registered, &label, bytes, face_index);
+}
+
+/// Add raw font bytes to every chain (used for the bundled symbols font).
+fn register_bytes(
+    definitions: &mut FontDefinitions,
+    terminal_chain: &mut Vec<String>,
+    ui_fallbacks: &mut Vec<String>,
+    registered: &mut Vec<String>,
+    label: &str,
+    bytes: std::borrow::Cow<'static, [u8]>,
+    face_index: u32,
+) {
+    let mut key = label.to_owned();
     let mut suffix = 1;
     while definitions.font_data.contains_key(&key) {
-        key = format!("{base_name}-{suffix}");
+        key = format!("{label}-{suffix}");
         suffix += 1;
     }
-
     definitions.font_data.insert(
         key.clone(),
         std::sync::Arc::new(FontData {
@@ -181,5 +212,5 @@ fn register_face(
     );
     terminal_chain.push(key.clone());
     ui_fallbacks.push(key.clone());
-    registered.push(base_name);
+    registered.push(label.to_owned());
 }

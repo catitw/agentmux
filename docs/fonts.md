@@ -16,7 +16,12 @@ Preference order, first match wins:
 1. **Icons (Nerd Font)** — exact `Symbols Nerd Font Mono` / `Symbols Nerd
    Font`, else the first installed family whose name contains
    `Nerd Font Mono`, else any containing `Nerd Font`. (On this machine:
-   `FantasqueSansM Nerd Font Mono`.)
+   `FantasqueSansM Nerd Font Mono`.) After any system match, the **bundled
+   Symbols Nerd Font Mono** (`assets/fonts/SymbolsNerdFontMono-Regular.ttf`,
+   nerd-fonts release **v3.5.0**, sha256
+   `2dc316f2505a0cbfbcf6060a1b4ba85b0a2974189e30c0037cdedc436a25a4ff`) is
+   registered as the guaranteed icon floor: system fonts are preferred, but
+   icon coverage no longer depends on what is installed.
 2. **CJK** — `Noto Sans CJK SC`, `Noto Sans CJK TC`, `Noto Sans CJK JP`,
    `Noto Sans CJK`, `WenQuanYi Micro Hei`, `WenQuanYi Zen Hei`,
    `Microsoft YaHei`, `PingFang SC`, `Source Han Sans SC`. (This machine:
@@ -48,12 +53,23 @@ The preference lists are hardcoded in `fonts.rs::setup_fonts`. To force a
 specific font: install it and adjust the lists (or reorder them); no config
 file is read. `AGENTMUX_SEED_COMMAND` (see below) does not affect fonts.
 
+## Bundled font & attribution
+
+`assets/fonts/SymbolsNerdFontMono-Regular.ttf` is **Nerd Fonts
+SymbolsOnly (Mono) v3.5.0**, by the nerd-fonts project
+(https://github.com/ryanoasis/nerd-fonts, SIL OFL 1.1). Individual icon
+sets inside the font retain their own licenses (CC BY 4.0, MIT, Apache
+2.0, … — see the `README.md` table shipped with the release; the release
+packaging itself is MIT). The font is embedded via `include_bytes!`
+(~2.4 MB) and registered as the final icon fallback; it is never the
+primary terminal font, so cell metrics stay driven by the monospace font.
+
 ## Limitation
 
-No fonts are bundled — headless/minimal systems without Nerd/CJK fonts will
-still render those glyphs as tofu (the app logs that no fallbacks were
-found). Bundling (e.g. a Symbols Nerd Font subset) is a deliberate future
-step only if needed.
+CJK is system-only — bundling a CJK font is deliberately avoided (too
+large). A minimal system without any CJK font still renders CJK as tofu
+(and logs that only the bundled symbols were found). Nerd Font icons are
+now guaranteed by the bundle.
 
 ## Verification hook
 

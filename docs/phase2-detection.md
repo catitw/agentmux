@@ -93,6 +93,10 @@ shows no agent).
   (≤ 500 ms) plus the shell prompt reappearing; status is not derived from
   exit codes.
 - Spawn-failure sessions (`shell_pid = 0`) are skipped by detection.
+- Since the color work, every session is spawned with
+  `TERM=xterm-256color` + `COLORTERM=truecolor` (agents emit full color;
+  the screen engine reads cell *characters*, so color depth does not affect
+  detection).
 - Rule calibration is biased to the agents installed on this machine
   (claude 2.1.220, omp, kimi captured live; herdr manifests transcribed for
   the rest) — new agent versions may need pattern updates.

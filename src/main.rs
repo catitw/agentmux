@@ -38,6 +38,19 @@ fn run_cli(f: impl FnOnce() -> std::io::Result<()>) -> eframe::Result {
 }
 
 fn run_gui() -> eframe::Result {
+    // The embedded terminals need a color-capable TERM. egui_term's backend
+    // does not set one (it builds alacritty's tty::Options without the env
+    // field — backend/mod.rs:153-156; alacritty's own setup_env is app-level
+    // and unused by the library), so sessions would inherit whatever
+    // launched agentmux (e.g. TERM=dumb) and agents would suppress color.
+    // Set both here, single-threaded, before eframe spawns any threads.
+    // SAFETY: no other threads exist yet (hook server / renderer spawn only
+    // inside run_native below).
+    unsafe {
+        std::env::set_var("TERM", "xterm-256color");
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
