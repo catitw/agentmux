@@ -2,5 +2,22 @@
 name = "agentmux"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.92"
 
 [dependencies]
+eframe = { version = "0.35", default-features = false, features = [
+    "default_fonts", # Embed the default egui fonts.
+    "wgpu",          # Use the wgpu rendering backend.
+    "x11",           # Linux/X11 windowing.
+    "wayland",       # Linux/Wayland windowing.
+] }
+egui = "0.35"
+egui_term = { git = "https://github.com/kemokempo/egui_term", branch = "main" }
+
+# Enable wgpu's default backend features (Vulkan/Metal/DX12/GLES) so the app
+# can find a GPU adapter on every platform. Feature-unifies with eframe's wgpu.
+wgpu = "29"
+
+[[bin]]
+name = "agentmux"
+path = "src/main.rs"
