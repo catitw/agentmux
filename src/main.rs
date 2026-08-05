@@ -3,6 +3,7 @@
 
 mod app;
 mod detect;
+mod fonts;
 mod hooks;
 mod notify;
 mod session;

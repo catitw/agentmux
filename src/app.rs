@@ -6,7 +6,7 @@ use crate::hooks::{HookAuthority, HookState, ReportServer};
 use crate::notify::ToastQueue;
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
-use crate::{detect, hooks, sidebar, terminal_pane};
+use crate::{detect, fonts, hooks, sidebar, terminal_pane};
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -80,10 +80,25 @@ pub struct AgentMuxApp {
     /// Optional transition log (`AGENTMUX_DEBUG_LOG`), appended on every
     /// detection transition: `session N: agent=X state=Y source=hook|screen`.
     debug_log: Option<PathBuf>,
+    /// Terminal font family (primary = egui monospace + system fallbacks),
+    /// built once at startup.
+    terminal_font: egui_term::TerminalFont,
 }
 
 impl AgentMuxApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Register system font fallbacks (CJK / Nerd icons / emoji) before
+        // any text is laid out; see docs/fonts.md.
+        let font_setup = fonts::setup_fonts(&cc.egui_ctx);
+        if font_setup.registered.is_empty() {
+            eprintln!("agentmux fonts: no system fallback fonts found (CJK/icon glyphs may render as tofu)");
+        } else {
+            eprintln!(
+                "agentmux fonts: registered fallbacks: {}",
+                font_setup.registered.join(", ")
+            );
+        }
+
         let (pty_sender, pty_receiver) = mpsc::channel();
         let hook_server = ReportServer::start().expect("failed to start hook report server");
         eprintln!(
@@ -105,24 +120,46 @@ impl AgentMuxApp {
             toasts: ToastQueue::new(),
             hook_server,
             debug_log,
+            terminal_font: font_setup.terminal_font,
         };
-        // Seed one default session so the window is not empty on first launch.
+        // Seed one default session so the window is not empty on first
+        // launch. AGENTMUX_SEED_COMMAND overrides the session command
+        // (verification/testing hook; workdir stays $HOME). The value is a
+        // shell command line, run via `sh -c` (alacritty's tty layer treats
+        // the shell field as a program path, not a command string).
+        let (seed_command, seed_args) = match std::env::var_os("AGENTMUX_SEED_COMMAND") {
+            Some(cmd) => {
+                let cmd = cmd.to_string_lossy().into_owned();
+                #[cfg(windows)]
+                {
+                    ("cmd.exe".to_owned(), vec!["/C".to_owned(), cmd])
+                }
+                #[cfg(not(windows))]
+                {
+                    ("/bin/sh".to_owned(), vec!["-c".to_owned(), cmd])
+                }
+            }
+            None => (default_shell_command(), Vec::new()),
+        };
         app.spawn_session(
             cc.egui_ctx.clone(),
             default_work_dir(),
             "Shell",
-            &default_shell_command(),
+            &seed_command,
+            seed_args,
         );
         app
     }
 
-    /// Spawn a new session: a terminal running `command` in `work_dir`.
+    /// Spawn a new session: a terminal running `command` (with `args`) in
+    /// `work_dir`.
     fn spawn_session(
         &mut self,
         ctx: egui::Context,
         work_dir: PathBuf,
         tool_name: &str,
         command: &str,
+        args: Vec<String>,
     ) {
         let id = self.next_id;
         self.next_id += 1;
@@ -133,7 +170,7 @@ impl AgentMuxApp {
             self.pty_sender.clone(),
             BackendSettings {
                 shell: command.to_owned(),
-                args: Vec::new(),
+                args,
                 working_directory: Some(work_dir.clone()),
             },
         ) {
@@ -422,6 +459,7 @@ impl AgentMuxApp {
                 default_work_dir(),
                 "Shell",
                 &default_shell_command(),
+                Vec::new(),
             ),
         }
     }
@@ -460,7 +498,7 @@ impl eframe::App for AgentMuxApp {
                 .selected_id
                 .and_then(|id| self.sessions.get_mut(&id));
             match selected {
-                Some(entry) => terminal_pane::terminal_view(ui, entry),
+                Some(entry) => terminal_pane::terminal_view(ui, entry, &self.terminal_font),
                 None => terminal_pane::empty_placeholder(ui),
             }
         });

@@ -87,10 +87,15 @@ fn tab_label_with_marker(detection: &crate::detect::Detection, hook_authoritativ
 
 /// Render the selected session's embedded terminal, or a failure placeholder
 /// if the terminal could not be spawned.
-pub fn terminal_view(ui: &mut egui::Ui, entry: &mut SessionEntry) {
+pub fn terminal_view(
+    ui: &mut egui::Ui,
+    entry: &mut SessionEntry,
+    terminal_font: &egui_term::TerminalFont,
+) {
     match &mut entry.backend {
         Some(backend) => {
             let view = TerminalView::new(ui, backend)
+                .set_font(terminal_font.clone())
                 .set_focus(true)
                 .set_size(ui.available_size());
             ui.add(view);
