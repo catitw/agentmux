@@ -3,7 +3,9 @@
 use crate::detect::engine::Detector;
 use crate::detect::{AgentState, Detection};
 use crate::hooks::{HookAuthority, HookState, ReportServer};
+use crate::new_session::{self, NewSessionDraft};
 use crate::notify::ToastQueue;
+use crate::persist::{self, SessionMeta};
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
 use crate::{detect, fonts, hooks, sidebar, terminal_pane};
@@ -83,6 +85,8 @@ pub struct AgentMuxApp {
     /// Terminal font family (primary = egui monospace + system fallbacks),
     /// built once at startup.
     terminal_font: egui_term::TerminalFont,
+    /// Open new-session dialog draft (None = dialog closed).
+    new_session: Option<NewSessionDraft>,
 }
 
 impl AgentMuxApp {
@@ -121,33 +125,95 @@ impl AgentMuxApp {
             hook_server,
             debug_log,
             terminal_font: font_setup.terminal_font,
+            new_session: None,
         };
-        // Seed one default session so the window is not empty on first
-        // launch. AGENTMUX_SEED_COMMAND overrides the session command
-        // (verification/testing hook; workdir stays $HOME). The value is a
-        // shell command line, run via `sh -c` (alacritty's tty layer treats
-        // the shell field as a program path, not a command string).
-        let (seed_command, seed_args) = match std::env::var_os("AGENTMUX_SEED_COMMAND") {
+        // Session startup: AGENTMUX_SEED_COMMAND (verification hook) takes
+        // precedence; otherwise restore persisted sessions; otherwise seed
+        // one default session so the window is never empty. The seed value
+        // is a shell command line, run via `sh -c` (alacritty's tty layer
+        // treats the shell field as a program path, not a command string).
+        let seed = std::env::var_os("AGENTMUX_SEED_COMMAND")
+            .map(|cmd| cmd.to_string_lossy().into_owned());
+        match seed {
             Some(cmd) => {
-                let cmd = cmd.to_string_lossy().into_owned();
                 #[cfg(windows)]
-                {
-                    ("cmd.exe".to_owned(), vec!["/C".to_owned(), cmd])
-                }
+                let (seed_command, seed_args) = ("cmd.exe".to_owned(), vec!["/C".to_owned(), cmd]);
                 #[cfg(not(windows))]
-                {
-                    ("/bin/sh".to_owned(), vec!["-c".to_owned(), cmd])
+                let (seed_command, seed_args) = ("/bin/sh".to_owned(), vec!["-c".to_owned(), cmd]);
+                app.spawn_session(
+                    cc.egui_ctx.clone(),
+                    default_work_dir(),
+                    "Shell",
+                    &seed_command,
+                    seed_args,
+                );
+            }
+            None => {
+                let sessions_path = match persist::sessions_path() {
+                    Ok(path) => path,
+                    Err(err) => {
+                        eprintln!("agentmux: cannot locate sessions file ({err}), seeded default");
+                        app.spawn_session(
+                            cc.egui_ctx.clone(),
+                            default_work_dir(),
+                            "Shell",
+                            &default_shell_command(),
+                            Vec::new(),
+                        );
+                        return app;
+                    }
+                };
+                match persist::load(&sessions_path) {
+                Ok(metas) => {
+                    let mut restored = 0usize;
+                    for meta in metas {
+                        let work_dir = PathBuf::from(&meta.work_dir);
+                        if !work_dir.is_dir() {
+                            eprintln!(
+                                "agentmux: skipping session, work dir missing: {}",
+                                meta.work_dir
+                            );
+                            continue;
+                        }
+                        app.spawn_session(
+                            cc.egui_ctx.clone(),
+                            work_dir,
+                            &meta.label,
+                            &meta.command,
+                            Vec::new(),
+                        );
+                        restored += 1;
+                    }
+                    eprintln!(
+                        "agentmux: restored {restored} session(s) from {}",
+                        persist::sessions_path()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|_| "?".to_owned())
+                    );
+                }
+                Err(persist::LoadError::NotFound) => {
+                    eprintln!("agentmux: no sessions file, seeded default");
+                    app.spawn_session(
+                        cc.egui_ctx.clone(),
+                        default_work_dir(),
+                        "Shell",
+                        &default_shell_command(),
+                        Vec::new(),
+                    );
+                }
+                Err(persist::LoadError::Malformed(err)) => {
+                    eprintln!("agentmux: sessions file malformed ({err}), seeded default");
+                    app.spawn_session(
+                        cc.egui_ctx.clone(),
+                        default_work_dir(),
+                        "Shell",
+                        &default_shell_command(),
+                        Vec::new(),
+                    );
+                }
                 }
             }
-            None => (default_shell_command(), Vec::new()),
-        };
-        app.spawn_session(
-            cc.egui_ctx.clone(),
-            default_work_dir(),
-            "Shell",
-            &seed_command,
-            seed_args,
-        );
+        }
         app
     }
 
@@ -209,6 +275,29 @@ impl AgentMuxApp {
                 hook: None,
             },
         );
+        self.save_sessions();
+    }
+
+    /// Persist all live sessions' metadata (order = sidebar order). Failures
+    /// are logged, never fatal.
+    fn save_sessions(&self) {
+        let metas: Vec<SessionMeta> = self
+            .sessions
+            .values()
+            .map(|entry| SessionMeta {
+                work_dir: entry.session.work_dir.display().to_string(),
+                command: entry.session.command.clone(),
+                label: entry.session.tool_name.clone(),
+            })
+            .collect();
+        match persist::sessions_path() {
+            Ok(path) => {
+                if let Err(err) = persist::save(&path, &metas) {
+                    eprintln!("agentmux: failed to save sessions: {err}");
+                }
+            }
+            Err(err) => eprintln!("agentmux: failed to save sessions: {err}"),
+        }
     }
 
     /// Drain the PTY event channel and update the owning sessions.
@@ -448,19 +537,49 @@ impl AgentMuxApp {
                 .map(|(next_id, _)| *next_id)
                 .or_else(|| self.sessions.keys().next_back().copied());
         }
+        self.save_sessions();
     }
 
-    fn apply_action(&mut self, ctx: egui::Context, action: Action) {
+    fn apply_action(&mut self, action: Action) {
         match action {
             Action::Select(id) => self.selected_id = Some(id),
             Action::Close(id) => self.close_session(id),
-            Action::NewSession => self.spawn_session(
-                ctx,
-                default_work_dir(),
-                "Shell",
-                &default_shell_command(),
-                Vec::new(),
-            ),
+            // Both "+" buttons open the new-session dialog; the actual spawn
+            // happens on dialog submit (with the draft values).
+            Action::NewSession => {
+                if self.new_session.is_none() {
+                    self.new_session = Some(NewSessionDraft::new(
+                        default_work_dir().display().to_string(),
+                        default_shell_command(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Render the new-session dialog (if open) and act on its outcome.
+    fn update_new_session_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.new_session.take() else {
+            return;
+        };
+        match new_session::dialog(ctx, &mut draft) {
+            Some(new_session::DraftAction::Submit) => {
+                if let Err(error) = new_session::validate(&draft.work_dir, &draft.command) {
+                    draft.error = Some(error);
+                    self.new_session = Some(draft);
+                    return;
+                }
+                let work_dir = PathBuf::from(draft.work_dir.trim());
+                let (command, args) = new_session::split_command(&draft.command);
+                let label = if draft.label.trim().is_empty() {
+                    new_session::derive_label(&draft.command)
+                } else {
+                    draft.label.trim().to_owned()
+                };
+                self.spawn_session(ctx.clone(), work_dir, &label, &command, args);
+            }
+            Some(new_session::DraftAction::Cancel) => { /* drop draft */ }
+            None => self.new_session = Some(draft),
         }
     }
 }
@@ -506,8 +625,9 @@ impl eframe::App for AgentMuxApp {
         self.toasts.show(ui.ctx());
 
         if let Some(action) = action {
-            self.apply_action(ui.ctx().clone(), action);
+            self.apply_action(action);
         }
+        self.update_new_session_dialog(ui.ctx());
     }
 }
 

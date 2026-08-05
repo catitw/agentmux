@@ -28,6 +28,7 @@ dependencies = [
  "egui_term",
  "fontdb",
  "regex",
+ "serde",
  "serde_json",
  "sysinfo",
  "tiny_http",
