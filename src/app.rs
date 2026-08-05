@@ -9,7 +9,7 @@ use crate::persist::{self, SessionMeta};
 use crate::project::{ProjectClassifier, ProjectInfo};
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
-use crate::{detect, fonts, hooks, project, sidebar, terminal_pane, theme};
+use crate::{detect, fonts, hooks, project, sidebar, terminal_pane, theme, ui_theme};
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -115,12 +115,19 @@ impl AgentMuxApp {
                 font_setup.registered.join(", ")
             );
         }
-        // Terminal theme (ghostty palette if obtainable), cached once.
-        let (terminal_theme, palette_source) = theme::load_terminal_theme();
+        // Terminal theme (ghostty palette if obtainable), cached once, and
+        // the chrome visuals derived from the same palette.
+        let (terminal_theme, palette_source, ui_palette) = theme::load_terminal_theme();
         eprintln!(
             "agentmux theme: font '{}', palette {palette_source}",
             font_setup.terminal_font_name
         );
+        cc.egui_ctx.set_visuals(ui_theme::build_visuals(&ui_palette));
+        // Spacing rhythm: 8px-ish grid, comfortable button padding.
+        cc.egui_ctx.style_mut_of(egui::Theme::Dark, |style| {
+            style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+            style.spacing.button_padding = egui::vec2(10.0, 4.0);
+        });
 
         let (pty_sender, pty_receiver) = mpsc::channel();
         let hook_server = ReportServer::start().expect("failed to start hook report server");
@@ -457,7 +464,7 @@ impl AgentMuxApp {
             self.last_process_scan = now;
         }
 
-        let mut new_toasts = Vec::new();
+        let mut new_toasts: Vec<(String, crate::notify::ToastKind)> = Vec::new();
         let mut log_lines = Vec::new();
         for entry in self.sessions.values_mut() {
             if entry.backend.is_none() {
@@ -519,7 +526,10 @@ impl AgentMuxApp {
                     (None, Some(detection)) => {
                         entry.agent_detected_at = Some(now);
                         entry.state_since = Some(now);
-                        new_toasts.push(format!("{} detected", detection.agent.display_name()));
+                        new_toasts.push((
+                            format!("{} detected", detection.agent.display_name()),
+                            crate::notify::ToastKind::Info,
+                        ));
                     }
                     (Some(old), Some(new)) if old.agent == new.agent => {
                         if new.state == AgentState::Blocked && old.state != AgentState::Blocked {
@@ -533,9 +543,15 @@ impl AgentMuxApp {
                             } else {
                                 format!(": {message}")
                             };
-                            new_toasts.push(format!("{} needs attention{suffix}", new.agent.display_name()));
+                            new_toasts.push((
+                                format!("{} needs attention{suffix}", new.agent.display_name()),
+                                crate::notify::ToastKind::Attention,
+                            ));
                         } else if old.state == AgentState::Working && new.state == AgentState::Idle {
-                            new_toasts.push(format!("{} finished", new.agent.display_name()));
+                            new_toasts.push((
+                                format!("{} finished", new.agent.display_name()),
+                                crate::notify::ToastKind::Finished,
+                            ));
                         }
                         entry.state_since = Some(now);
                     }
@@ -556,8 +572,8 @@ impl AgentMuxApp {
             }
         }
 
-        for toast in new_toasts {
-            self.toasts.push(toast);
+        for (text, kind) in new_toasts {
+            self.toasts.push(text, kind);
         }
         for line in log_lines {
             self.debug_log(&line);
@@ -656,6 +672,7 @@ impl eframe::App for AgentMuxApp {
             action = action.or_else(|| terminal_pane::tab_bar(ui, &self.sessions, self.selected_id));
         });
 
+        let mut central_action = None;
         egui::CentralPanel::default().show(ui, |ui| {
             let selected = self
                 .selected_id
@@ -667,12 +684,15 @@ impl eframe::App for AgentMuxApp {
                     &self.terminal_font,
                     &self.terminal_theme,
                 ),
-                None => terminal_pane::empty_placeholder(ui),
+                None => central_action = terminal_pane::empty_state(ui),
             }
         });
 
         self.toasts.show(ui.ctx());
 
+        if action.is_none() {
+            action = central_action;
+        }
         if let Some(action) = action {
             self.apply_action(action);
         }

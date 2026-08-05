@@ -14,6 +14,7 @@ mod sidebar;
 mod status;
 mod terminal_pane;
 mod theme;
+mod ui_theme;
 
 use app::AgentMuxApp;
 

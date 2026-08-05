@@ -17,6 +17,42 @@
 
 use std::path::PathBuf;
 
+use egui::Color32;
+
+/// The palette in a form the UI chrome can consume directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiPalette {
+    pub fg: Color32,
+    pub bg: Color32,
+    pub ansi: [Color32; 16],
+}
+
+/// Built-in dark palette used when no ghostty palette is obtainable:
+/// Catppuccin Mocha (same values ghostty's resolved noctalia theme uses, so
+/// the chrome and the terminal always share one color family).
+pub const MOCHA: UiPalette = UiPalette {
+    fg: Color32::from_rgb(0xcd, 0xd6, 0xf4),
+    bg: Color32::from_rgb(0x1e, 0x1e, 0x2e),
+    ansi: [
+        Color32::from_rgb(0x45, 0x47, 0x5a), // 0 black
+        Color32::from_rgb(0xf3, 0x8b, 0xa8), // 1 red
+        Color32::from_rgb(0xa6, 0xe3, 0xa1), // 2 green
+        Color32::from_rgb(0xf9, 0xe2, 0xaf), // 3 yellow
+        Color32::from_rgb(0x89, 0xb4, 0xfa), // 4 blue (the accent)
+        Color32::from_rgb(0xf5, 0xc2, 0xe7), // 5 magenta
+        Color32::from_rgb(0x94, 0xe2, 0xd5), // 6 cyan
+        Color32::from_rgb(0xa6, 0xad, 0xc8), // 7 white
+        Color32::from_rgb(0x58, 0x5b, 0x70), // 8 bright black
+        Color32::from_rgb(0xf3, 0x77, 0x99), // 9 bright red
+        Color32::from_rgb(0x89, 0xd8, 0x8b), // 10 bright green
+        Color32::from_rgb(0xeb, 0xd3, 0x91), // 11 bright yellow
+        Color32::from_rgb(0x74, 0xa8, 0xfc), // 12 bright blue
+        Color32::from_rgb(0xf2, 0xae, 0xde), // 13 bright magenta
+        Color32::from_rgb(0x6b, 0xd7, 0xca), // 14 bright cyan
+        Color32::from_rgb(0xba, 0xc2, 0xde), // 15 bright white
+    ],
+};
+
 /// Where the active palette came from (startup log + tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteSource {
@@ -30,7 +66,7 @@ impl PaletteSource {
         match self {
             PaletteSource::GhosttyShowConfig => "ghostty(+show-config)",
             PaletteSource::GhosttyConfigFile => "ghostty(config)",
-            PaletteSource::Default => "egui_term default",
+            PaletteSource::Default => "built-in (catppuccin mocha)",
         }
     }
 }
@@ -50,9 +86,10 @@ struct ParsedPalette {
     colors: [String; 16],
 }
 
-/// Load the terminal theme once at startup. Returns the theme plus where the
-/// palette came from (for the startup log).
-pub fn load_terminal_theme() -> (egui_term::TerminalTheme, PaletteSource) {
+/// Load the terminal theme once at startup. Returns the terminal theme, the
+/// palette source (for the startup log) and the palette itself (for the UI
+/// chrome; see crate::ui_theme).
+pub fn load_terminal_theme() -> (egui_term::TerminalTheme, PaletteSource, UiPalette) {
     let force = std::env::var("AGENTMUX_TERMINAL_PALETTE").ok();
     let (parsed, source) = match force.as_deref() {
         Some("default") => (None, PaletteSource::Default),
@@ -60,17 +97,47 @@ pub fn load_terminal_theme() -> (egui_term::TerminalTheme, PaletteSource) {
         Some(other) => {
             eprintln!(
                 "agentmux theme: unknown AGENTMUX_TERMINAL_PALETTE '{other}' \
-                 (expected ghostty|default), using egui_term default"
+                 (expected ghostty|default), using built-in catppuccin mocha"
             );
             (None, PaletteSource::Default)
         }
         None => resolve_ghostty_palette(),
     };
-    let theme = match parsed {
-        Some(parsed) => build_theme(&parsed),
-        None => egui_term::TerminalTheme::default(),
-    };
-    (theme, source)
+    match parsed {
+        Some(parsed) => {
+            let palette = UiPalette::from(&parsed);
+            (build_theme(&parsed), source, palette)
+        }
+        None => {
+            // Built-in fallback: Catppuccin Mocha, so the terminal and the
+            // chrome stay in one color family even without ghostty.
+            let mocha = MOCHA;
+            let parsed = ParsedPalette {
+                fg: hex_string(mocha.fg),
+                bg: hex_string(mocha.bg),
+                colors: std::array::from_fn(|i| hex_string(mocha.ansi[i])),
+            };
+            (build_theme(&parsed), source, mocha)
+        }
+    }
+}
+
+fn hex_string(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+impl From<&ParsedPalette> for UiPalette {
+    fn from(parsed: &ParsedPalette) -> Self {
+        let parse = |hex: &str| {
+            let (r, g, b) = parse_rgb(hex);
+            Color32::from_rgb(r, g, b)
+        };
+        UiPalette {
+            fg: parse(&parsed.fg),
+            bg: parse(&parsed.bg),
+            ansi: std::array::from_fn(|i| parse(&parsed.colors[i])),
+        }
+    }
 }
 
 /// Try the two ghostty sources in priority order.

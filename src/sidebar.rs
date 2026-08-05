@@ -18,15 +18,18 @@ pub fn show(
 ) -> Option<Action> {
     let mut action = None;
 
-    ui.add_space(4.0);
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.heading("Sessions");
+        // Typography hierarchy: smaller than the old heading() — the list
+        // is the content, the header should not compete with it.
+        ui.label(egui::RichText::new("Sessions").size(14.0).strong());
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             if ui.button("+").on_hover_text("New session").clicked() {
                 action = Some(Action::NewSession);
             }
         });
     });
+    ui.add_space(4.0);
     ui.separator();
 
     egui::ScrollArea::vertical()
@@ -134,14 +137,30 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
     );
 
     let visuals = ui.visuals();
+    let accent = visuals.selection.bg_fill;
+    // Selected: a soft accent-tinted fill (the saturated accent is reserved
+    // for the edge bar) + a 2px accent bar at the left edge. Pressed is a
+    // slightly darker accent tint; hover stays subtle.
     let bg = if is_selected {
-        visuals.selection.bg_fill
+        crate::ui_theme::mix(visuals.panel_fill, accent, 0.16)
+    } else if response.is_pointer_button_down_on() {
+        crate::ui_theme::mix(visuals.panel_fill, accent, 0.24)
     } else if response.hovered() {
         visuals.widgets.hovered.weak_bg_fill
     } else {
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(rect, 4.0, bg);
+    if is_selected {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 2.0, rect.top() + 4.0),
+                egui::vec2(2.5, rect.height() - 8.0),
+            ),
+            egui::CornerRadius::ZERO,
+            accent,
+        );
+    }
 
     let session = &entry.session;
 
@@ -159,11 +178,7 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
     let dot_center = egui::pos2(rect.left() + 12.0, rect.center().y);
     ui.painter().circle_filled(dot_center, 4.5, dot_color);
 
-    let text_color = if is_selected {
-        visuals.selection.stroke.color
-    } else {
-        visuals.text_color()
-    };
+    let text_color = visuals.text_color();
     ui.painter().text(
         egui::pos2(rect.left() + 24.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -177,12 +192,18 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| session.work_dir.display().to_string());
+    // On the selected tint the weak color can drop too low; keep it readable.
+    let basename_color = if is_selected {
+        visuals.text_color().gamma_multiply(0.8)
+    } else {
+        visuals.weak_text_color()
+    };
     ui.painter().text(
         egui::pos2(rect.right() - 8.0, rect.center().y),
         Align2::RIGHT_CENTER,
         basename,
         egui::FontId::proportional(12.0),
-        visuals.weak_text_color(),
+        basename_color,
     );
 
     let agent_line = match &entry.detection {

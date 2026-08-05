@@ -77,21 +77,33 @@ pub fn dialog(ctx: &egui::Context, draft: &mut NewSessionDraft) -> Option<DraftA
     egui::Window::new("New session")
         .collapsible(false)
         .resizable(false)
+        .default_width(360.0)
         .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
             ui.label("Work directory");
             ui.text_edit_singleline(&mut draft.work_dir);
+            ui.add_space(6.0);
             ui.label("Command");
             ui.text_edit_singleline(&mut draft.command);
+            ui.add_space(6.0);
             ui.label("Label (optional, empty = derive from command)");
             ui.text_edit_singleline(&mut draft.label);
 
             if let Some(error) = &draft.error {
-                ui.colored_label(egui::Color32::from_rgb(229, 72, 77), error);
+                ui.add_space(2.0);
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
 
-            ui.add_space(4.0);
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
-                if ui.button("Create").clicked() {
+                // Primary action wears the single accent; cancel stays quiet.
+                let accent = ui.visuals().selection.bg_fill;
+                let create = egui::Button::new(
+                    egui::RichText::new("Create").color(ui.visuals().extreme_bg_color),
+                )
+                .fill(accent)
+                .stroke(egui::Stroke::new(1.0, accent));
+                if ui.add(create).clicked() {
                     action = Some(DraftAction::Submit);
                 }
                 if ui.button("Cancel").clicked() {
