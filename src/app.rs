@@ -2,10 +2,11 @@
 
 use crate::detect::engine::Detector;
 use crate::detect::{AgentState, Detection};
+use crate::hooks::{HookAuthority, HookState, ReportServer};
 use crate::notify::ToastQueue;
 use crate::session::{Session, SessionStatus};
 use crate::status::status_from_pty_event;
-use crate::{detect, sidebar, terminal_pane};
+use crate::{detect, hooks, sidebar, terminal_pane};
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -43,6 +44,9 @@ pub struct SessionEntry {
     pub detector: Detector,
     /// Set when PTY events arrived since the last detection pass.
     pub needs_rescan: bool,
+    /// Live hook authority (herdr Channel C); while present and its agent
+    /// process is alive, its state overrides the screen engine.
+    pub hook: Option<HookAuthority>,
 }
 
 /// UI actions produced by the sidebar / tab bar, applied by the app after
@@ -71,11 +75,25 @@ pub struct AgentMuxApp {
     system: System,
     last_process_scan: Instant,
     toasts: ToastQueue,
+    /// Loopback hook report server (lives for the whole app lifetime).
+    hook_server: ReportServer,
+    /// Optional transition log (`AGENTMUX_DEBUG_LOG`), appended on every
+    /// detection transition: `session N: agent=X state=Y source=hook|screen`.
+    debug_log: Option<PathBuf>,
 }
 
 impl AgentMuxApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (pty_sender, pty_receiver) = mpsc::channel();
+        let hook_server = ReportServer::start().expect("failed to start hook report server");
+        eprintln!(
+            "agentmux hook server listening on 127.0.0.1:{} (port file: {})",
+            hook_server.port,
+            ReportServer::port_file_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "?".to_owned())
+        );
+        let debug_log = std::env::var_os("AGENTMUX_DEBUG_LOG").map(PathBuf::from);
         let mut app = Self {
             sessions: BTreeMap::new(),
             selected_id: None,
@@ -85,6 +103,8 @@ impl AgentMuxApp {
             system: System::new(),
             last_process_scan: Instant::now(),
             toasts: ToastQueue::new(),
+            hook_server,
+            debug_log,
         };
         // Seed one default session so the window is not empty on first launch.
         app.spawn_session(
@@ -149,6 +169,7 @@ impl AgentMuxApp {
                 state_since: None,
                 detector: Detector::new(),
                 needs_rescan: false,
+                hook: None,
             },
         );
     }
@@ -190,6 +211,73 @@ impl AgentMuxApp {
         }
     }
 
+    /// Drain the hook report channel and apply reports to sessions.
+    ///
+    /// Each report is resolved against a fresh process snapshot (reports are
+    /// rare, so the refresh cost is irrelevant): the session is found by
+    /// walking ancestors from the reported pid; the persistent agent process
+    /// is resolved by matching the reported agent kind up the same chain.
+    /// `Clear` reports (SessionEnd / session_shutdown) release authority.
+    /// Reports whose pid is not under any session shell are dropped
+    /// (e.g. an agent launched outside agentmux).
+    fn drain_hook_reports(&mut self) {
+        let mut reports = Vec::new();
+        while let Ok(report) = self.hook_server.receiver.try_recv() {
+            reports.push(report);
+        }
+        if reports.is_empty() {
+            return;
+        }
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::everything(),
+        );
+        let now = Instant::now();
+        let shells: Vec<(u32, u64)> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| entry.shell_pid != 0)
+            .map(|(id, entry)| (entry.shell_pid, *id))
+            .collect();
+
+        for report in reports {
+            let Some(session_id) = hooks::find_session_for_pid(&self.system, report.pid, &shells)
+            else {
+                continue;
+            };
+            let Some(entry) = self.sessions.get_mut(&session_id) else {
+                continue;
+            };
+            match report.state {
+                HookState::Clear => entry.hook = None,
+                state => {
+                    let Some(agent_state) = state.as_agent_state() else {
+                        continue;
+                    };
+                    let agent_pid =
+                        hooks::resolve_agent_pid(&self.system, report.pid, report.agent);
+                    entry.hook = Some(HookAuthority {
+                        agent: report.agent,
+                        state: agent_state,
+                        reported_at: now,
+                        message: report.message,
+                        agent_pid,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Append one line to the debug transition log, if enabled.
+    fn debug_log(&self, line: &str) {
+        let Some(path) = &self.debug_log else { return };
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+
     /// One detection pass over all sessions.
     ///
     /// The shared sysinfo snapshot is refreshed at most every
@@ -210,6 +298,7 @@ impl AgentMuxApp {
         }
 
         let mut new_toasts = Vec::new();
+        let mut log_lines = Vec::new();
         for entry in self.sessions.values_mut() {
             if entry.backend.is_none() {
                 continue;
@@ -217,26 +306,47 @@ impl AgentMuxApp {
             if process_tick {
                 entry.detector.candidates = detect::process::scan_agents(&self.system, entry.shell_pid);
             }
-            if !entry.needs_rescan && !process_tick {
-                continue;
-            }
-            let due = entry
-                .detector
-                .last_sync
-                .is_none_or(|last| now.duration_since(last) >= SCREEN_SYNC_INTERVAL);
-            if !due {
-                continue;
-            }
-            entry.needs_rescan = false;
-            entry.detector.last_sync = Some(now);
 
-            let backend = entry.backend.as_mut().expect("checked above");
-            let bottom = detect::screen::bottom_non_empty_lines(
-                &backend.sync().grid,
-                detect::screen::DEFAULT_BOTTOM_LINES,
-            );
-            let title = entry.terminal_title.as_deref();
-            let new_detection = entry.detector.evaluate(&bottom, title);
+            // Hook authority liveness: released when the resolved agent
+            // process disappears from the scan (or a clear report arrived in
+            // drain_hook_reports).
+            let hook_live = entry
+                .hook
+                .as_ref()
+                .is_some_and(|hook| hooks::hook_is_live(&self.system, hook.agent_pid, entry.shell_pid));
+            if entry.hook.is_some() && !hook_live {
+                entry.hook = None;
+            }
+
+            // Screen engine result (throttled) when no hook authority is held.
+            let screen = if entry.hook.is_some() {
+                None
+            } else {
+                if !entry.needs_rescan && !process_tick {
+                    continue;
+                }
+                let due = entry
+                    .detector
+                    .last_sync
+                    .is_none_or(|last| now.duration_since(last) >= SCREEN_SYNC_INTERVAL);
+                if !due {
+                    continue;
+                }
+                entry.needs_rescan = false;
+                entry.detector.last_sync = Some(now);
+
+                let backend = entry.backend.as_mut().expect("checked above");
+                let bottom = detect::screen::bottom_non_empty_lines(
+                    &backend.sync().grid,
+                    detect::screen::DEFAULT_BOTTOM_LINES,
+                );
+                let title = entry.terminal_title.as_deref();
+                entry.detector.evaluate(&bottom, title)
+            };
+
+            // Arbitration: live hook state wins over the screen engine.
+            let (new_detection, source, _hook_released) =
+                hooks::arbitrate(entry.hook.as_ref(), entry.hook.is_some(), screen);
 
             let old_detection = entry.detection;
             if new_detection != old_detection {
@@ -248,7 +358,17 @@ impl AgentMuxApp {
                     }
                     (Some(old), Some(new)) if old.agent == new.agent => {
                         if new.state == AgentState::Blocked && old.state != AgentState::Blocked {
-                            new_toasts.push(format!("{} needs attention", new.agent.display_name()));
+                            let message = entry
+                                .hook
+                                .as_ref()
+                                .and_then(|hook| hook.message.clone())
+                                .unwrap_or_default();
+                            let suffix = if message.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {message}")
+                            };
+                            new_toasts.push(format!("{} needs attention{suffix}", new.agent.display_name()));
                         } else if old.state == AgentState::Working && new.state == AgentState::Idle {
                             new_toasts.push(format!("{} finished", new.agent.display_name()));
                         }
@@ -258,11 +378,24 @@ impl AgentMuxApp {
                     _ => {}
                 }
                 entry.detection = new_detection;
+                log_lines.push(format!(
+                    "session {}: agent={} state={} source={source}",
+                    entry.session.id,
+                    new_detection
+                        .map(|d| d.agent.display_name().to_owned())
+                        .unwrap_or_else(|| "none".to_owned()),
+                    new_detection
+                        .map(|d| d.state.label().to_owned())
+                        .unwrap_or_else(|| "none".to_owned()),
+                ));
             }
         }
 
         for toast in new_toasts {
             self.toasts.push(toast);
+        }
+        for line in log_lines {
+            self.debug_log(&line);
         }
     }
 
@@ -303,6 +436,7 @@ impl eframe::App for AgentMuxApp {
         }
 
         self.drain_pty_events();
+        self.drain_hook_reports();
         self.run_detection(Instant::now());
 
         // Backstop: keep the detection loop (and status UI) ticking even

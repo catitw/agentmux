@@ -20,6 +20,9 @@ sysinfo = "0.39"
 # Enable wgpu's default backend features (Vulkan/Metal/DX12/GLES) so the app
 # can find a GPU adapter on every platform. Feature-unifies with eframe's wgpu.
 wgpu = "29"
+tiny_http = "0.12.0"
+serde_json = "1.0.151"
+dirs = "6.0.0"
 
 [[bin]]
 name = "agentmux"

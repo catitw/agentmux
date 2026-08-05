@@ -3,6 +3,7 @@
 
 mod app;
 mod detect;
+mod hooks;
 mod notify;
 mod session;
 mod sidebar;
@@ -12,6 +13,28 @@ mod terminal_pane;
 use app::AgentMuxApp;
 
 fn main() -> eframe::Result {
+    // CLI-only paths run without starting the GUI.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--install-hooks") => return run_cli(hooks::install::install),
+        Some("--uninstall-hooks") => return run_cli(hooks::install::uninstall),
+        _ => {}
+    }
+    run_gui()
+}
+
+/// Run an installer CLI command; exits the process with its result.
+fn run_cli(f: impl FnOnce() -> std::io::Result<()>) -> eframe::Result {
+    match f() {
+        Ok(()) => std::process::exit(0),
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_gui() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])

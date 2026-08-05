@@ -262,6 +262,7 @@ mod tests {
             .chain(std::iter::once(
                 "'/fake/node_modules/@anthropic-ai/claude-code/cli.js'".to_string(),
             ))
+            .chain(std::iter::once("& wait".to_string()))
             .collect();
         let mut child = std::process::Command::new("bash")
             .arg("-c")

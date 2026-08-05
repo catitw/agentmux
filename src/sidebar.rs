@@ -63,10 +63,15 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
 
     let session = &entry.session;
 
-    // Agent layer takes visual precedence when present.
+    // Agent layer takes visual precedence when present; a ⚡ marks
+    // hook-authoritative state (herdr Channel C).
     let (dot_color, primary_label) = match &entry.detection {
-        Some(detection) => (detection.state.color(), detection.agent.display_name()),
-        None => (session.status.color(), session.tool_name.as_str()),
+        Some(detection) if entry.hook.is_some() => (
+            detection.state.color(),
+            format!("{} ⚡", detection.agent.display_name()),
+        ),
+        Some(detection) => (detection.state.color(), detection.agent.display_name().to_owned()),
+        None => (session.status.color(), session.tool_name.clone()),
     };
 
     let dot_center = egui::pos2(rect.left() + 12.0, rect.center().y);
@@ -99,11 +104,29 @@ fn session_row(ui: &mut egui::Ui, entry: &SessionEntry, is_selected: bool) -> eg
     );
 
     let agent_line = match &entry.detection {
-        Some(detection) => format!(
-            "agent: {} ({})\n",
-            detection.agent.display_name(),
-            detection.state.label()
-        ),
+        Some(detection) => {
+            let source = match &entry.hook {
+                Some(hook) => {
+                    let age = std::time::Instant::now()
+                        .duration_since(hook.reported_at)
+                        .as_secs();
+                    format!(
+                        " (hook{} · {}s ago), source: hook",
+                        hook.message
+                            .as_deref()
+                            .map(|m| format!(": {m}"))
+                            .unwrap_or_default(),
+                        age
+                    )
+                }
+                None => ", source: screen".to_owned(),
+            };
+            format!(
+                "agent: {} ({}){source}\n",
+                detection.agent.display_name(),
+                detection.state.label()
+            )
+        }
         None => String::new(),
     };
     response.on_hover_text(format!(

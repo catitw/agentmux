@@ -17,8 +17,11 @@ pub fn tab_bar(
             let is_selected = selected == Some(*id);
             // Tab label: agent marker (state-colored dot + agent name) when
             // an agent is detected, else the terminal title / tool name.
+            // A ⚡ marks hook-authoritative state.
             let label: egui::WidgetText = match &entry.detection {
-                Some(detection) => tab_label_with_marker(detection),
+                Some(detection) => {
+                    tab_label_with_marker(detection, entry.hook.is_some())
+                }
                 None => entry
                     .terminal_title
                     .as_deref()
@@ -45,8 +48,9 @@ pub fn tab_bar(
 }
 
 /// Tab label for a detected agent: a state-colored "●" dot followed by the
-/// agent's display name (e.g. "● Claude Code").
-fn tab_label_with_marker(detection: &crate::detect::Detection) -> egui::WidgetText {
+/// agent's display name (e.g. "● Claude Code"), with a "⚡" marker when the
+/// state is hook-authoritative.
+fn tab_label_with_marker(detection: &crate::detect::Detection, hook_authoritative: bool) -> egui::WidgetText {
     let font = egui::FontId::proportional(14.0);
     let mut job = egui::text::LayoutJob::default();
     job.append(
@@ -62,11 +66,22 @@ fn tab_label_with_marker(detection: &crate::detect::Detection) -> egui::WidgetTe
         detection.agent.display_name(),
         0.0,
         egui::TextFormat {
-            font_id: font,
+            font_id: font.clone(),
             color: egui::Color32::PLACEHOLDER, // inherits widget color
             ..Default::default()
         },
     );
+    if hook_authoritative {
+        job.append(
+            " ⚡",
+            0.0,
+            egui::TextFormat {
+                font_id: font,
+                color: egui::Color32::PLACEHOLDER,
+                ..Default::default()
+            },
+        );
+    }
     job.into()
 }
 
