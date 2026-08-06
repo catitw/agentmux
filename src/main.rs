@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 mod app;
+mod desktop;
 mod detect;
 mod fonts;
 mod hooks;
@@ -23,6 +24,8 @@ fn main() -> eframe::Result {
     match args.first().map(String::as_str) {
         Some("--install-hooks") => return run_cli(hooks::install::install),
         Some("--uninstall-hooks") => return run_cli(hooks::install::uninstall),
+        Some("--install-desktop-entry") => return run_cli(desktop::install_desktop_entry),
+        Some("--uninstall-desktop-entry") => return run_cli(desktop::uninstall_desktop_entry),
         _ => {}
     }
     run_gui()

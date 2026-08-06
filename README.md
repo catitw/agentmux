@@ -20,7 +20,25 @@
 
 - Rust 工具链。仓库内 `rust-toolchain.toml` 固定 **1.97.1**(MSRV 1.92);在仓库目录内执行 cargo 命令时 rustup 会自动选用该版本。
 
-### cargo install
+### 推荐:安装脚本
+
+```bash
+git clone git@github.com:catitw/agentmux.git
+cd agentmux
+./install.sh              # cargo install + 桌面启动器入口
+./install.sh --with-hooks # 额外启用 claude / omp 状态上报
+```
+
+`install.sh` 依次执行:`cargo install --path . --locked`、安装 freedesktop 桌面启动器入口(应用菜单中出现 agentmux),`--with-hooks` 时再安装 hook 集成。脚本自带 `set -eu`,每步失败都会明确报错。
+
+卸载:
+
+```bash
+./uninstall.sh        # 先移除启动器入口,再 cargo uninstall(保留 ~/.config/agentmux 配置)
+./uninstall.sh --purge # 同时删除配置目录
+```
+
+### 备选:手动 cargo install
 
 ```bash
 git clone git@github.com:catitw/agentmux.git
@@ -29,6 +47,13 @@ cargo install --path .
 ```
 
 安装完成后二进制位于 `~/.cargo/bin/agentmux`。hook 脚本与内嵌的 Nerd Font 符号字体均通过 `include_str!` / `include_bytes!` 在编译期内嵌,安装产物自包含,不需要额外的资产文件。
+
+桌面启动器入口也可手动安装:
+
+```bash
+agentmux --install-desktop-entry   # 写入 ~/.local/share/applications/agentmux.desktop + 图标
+agentmux --uninstall-desktop-entry # 精确移除上述两个文件
+```
 
 ### 安装后(可选)
 
@@ -39,7 +64,7 @@ agentmux --install-hooks
 agentmux --uninstall-hooks
 ```
 
-### 卸载
+### 卸载(手动方式)
 
 ```bash
 cargo uninstall agentmux
@@ -56,6 +81,7 @@ cargo uninstall agentmux
 ## 平台支持
 
 - **Linux**(X11 / Wayland)、**macOS**、**Windows**(ConPTY)。
+- 桌面启动器入口是 freedesktop 标准(Linux/BSD);macOS/Windows 的开始菜单 / 应用包集成是未来工作。
 - 已知限制:
   - Windows 上 claude hook 资产为 POSIX sh 脚本,无法执行(需未来的 .ps1 变体);omp 扩展已支持 Windows 路径,因此 omp 会话在 Windows 上仍有 hook 上报。
   - 活 cwd 跟踪在 Linux(/proc)与 macOS(libproc)上可用;Windows 无此 API,分组回退使用会话启动时的工作目录。

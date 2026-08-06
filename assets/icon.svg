@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- agentmux: rounded-square #1e1e2e tile with a #89b4fa ">_" prompt motif -->
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="#1e1e2e"/>
+  <!-- prompt chevron ">" -->
+  <path d="M36 40 L66 64 L36 88 Z" fill="#89b4fa"/>
+  <!-- prompt underscore "_" -->
+  <rect x="76" y="72" width="30" height="10" rx="2" fill="#89b4fa"/>
+</svg>
